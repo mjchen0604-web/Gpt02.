@@ -655,6 +655,9 @@ const EditChannelModal = (props) => {
           localModels = getChannelModels(value);
           setInputs((prevInputs) => ({
             ...prevInputs,
+            base_url:
+              prevInputs.base_url || 'http://127.0.0.1:1455',
+            key: prevInputs.key || 'internal-chatcore',
             allow_service_tier: true,
           }));
           break;
