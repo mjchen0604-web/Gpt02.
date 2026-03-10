@@ -1,12 +1,12 @@
-FROM oven/bun:latest AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /build
 COPY web/package.json .
-COPY web/bun.lock .
-RUN bun install
+COPY web/package-lock.json .
+RUN npm ci --legacy-peer-deps
 COPY ./web .
 COPY ./VERSION .
-RUN DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat VERSION) bun run build
+RUN DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat VERSION) npm run build
 
 FROM golang:alpine AS builder2
 ENV GO111MODULE=on CGO_ENABLED=0
