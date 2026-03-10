@@ -4,6 +4,7 @@ from flask import Flask, jsonify
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .http import build_cors_headers
+from .routes_dashboard import apply_persisted_dashboard_settings, dashboard_bp
 from .routes_anthropic import anthropic_bp
 from .routes_openai import openai_bp
 from .routes_ollama import ollama_bp
@@ -45,8 +46,10 @@ def create_app(
             resp.headers.setdefault(k, v)
         return resp
 
+    app.register_blueprint(dashboard_bp)
     app.register_blueprint(openai_bp)
     app.register_blueprint(ollama_bp)
     app.register_blueprint(anthropic_bp)
+    apply_persisted_dashboard_settings(app)
 
     return app

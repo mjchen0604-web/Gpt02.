@@ -5,8 +5,11 @@ CHAT_HOST="${CHATCORE_INTERNAL_CHAT_HOST:-127.0.0.1}"
 CHAT_PORT="${CHATCORE_INTERNAL_CHAT_PORT:-1455}"
 AUTH_DIR="${CHATMOCK_AUTH_DIR:-/data/chatmock-accounts}"
 CHAT_ROOT="/app/embedded-chatmock"
+SETTINGS_PATH="${CHATMOCK_DASHBOARD_SETTINGS_PATH:-/data/chatmock-dashboard-settings.json}"
 
 mkdir -p "$AUTH_DIR" /data
+export CHATMOCK_DASHBOARD_AUTH_DIR="${CHATMOCK_DASHBOARD_AUTH_DIR:-$AUTH_DIR}"
+export CHATMOCK_DASHBOARD_SETTINGS_PATH="$SETTINGS_PATH"
 
 build_auth_files_from_env() {
   local -a files=()

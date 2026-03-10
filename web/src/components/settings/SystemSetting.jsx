@@ -749,9 +749,9 @@ const SystemSetting = () => {
                       target='_blank'
                       rel='noreferrer'
                     >
-                      new-api-worker
+                      ii-fy-worker
                     </a>{' '}
-                    {t('或其兼容new-api-worker格式的其他版本')}
+                    或其兼容 ii-fy-worker 格式的其他版本
                   </Text>
                   <Row
                     gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}

@@ -193,6 +193,18 @@ func SetApiRouter(router *gin.Engine) {
 			performanceRoute.POST("/reset_stats", controller.ResetPerformanceStats)
 			performanceRoute.POST("/gc", controller.ForceGC)
 		}
+		chatCoreAdminRoute := apiRouter.Group("/chatcore/admin")
+		chatCoreAdminRoute.Use(middleware.RootAuth())
+		{
+			chatCoreAdminRoute.GET("/health", controller.GetEmbeddedChatHealth)
+			chatCoreAdminRoute.GET("/accounts", controller.GetEmbeddedChatAccounts)
+			chatCoreAdminRoute.GET("/models", controller.GetEmbeddedChatModels)
+			chatCoreAdminRoute.GET("/config", controller.GetEmbeddedChatConfig)
+			chatCoreAdminRoute.GET("/logs", controller.GetEmbeddedChatLogs)
+			chatCoreAdminRoute.GET("/settings", controller.GetEmbeddedChatSettings)
+			chatCoreAdminRoute.POST("/settings", controller.SaveEmbeddedChatSettings)
+			chatCoreAdminRoute.POST("/upload_auths", controller.UploadEmbeddedChatAuths)
+		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())
 		{

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 820" role="img" aria-label="II.fy logo">
+  <rect width="820" height="820" fill="#ffffff"/>
+  <g fill="none" stroke="#111111" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M410 132c-118 0-214 96-214 214 0 46 15 89 40 124l-28 92 93-25c31 13 65 23 109 23 118 0 214-96 214-214S528 132 410 132Z" stroke-width="36"/>
+    <path d="M312 258 410 205l98 53v112l-98 53-98-53Z" stroke-width="28"/>
+    <path d="M365 294 410 270l45 24" stroke-width="24"/>
+    <path d="M365 344 410 320l45 24" stroke-width="24"/>
+    <path d="M410 132v-42" stroke-width="18"/>
+    <path d="m245 190-28-30" stroke-width="18"/>
+    <path d="m575 190 28-30" stroke-width="18"/>
+    <path d="m173 348-38-8" stroke-width="18"/>
+    <path d="m647 348 38-8" stroke-width="18"/>
+    <circle cx="226" cy="516" r="10" fill="#111111" stroke="none"/>
+    <circle cx="603" cy="531" r="12" fill="#111111" stroke="none"/>
+    <circle cx="566" cy="159" r="12" fill="#111111" stroke="none"/>
+  </g>
+  <path d="M251 570c46-18 100-28 159-28 55 0 108 10 156 27" fill="none" stroke="#111111" stroke-width="18" stroke-linecap="round"/>
+  <text x="410" y="720" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="120" font-style="italic" font-weight="700" fill="#111111">II.fy</text>
+</svg>
