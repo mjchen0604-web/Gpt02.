@@ -122,7 +122,8 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 		}
 
 		// responses-only models
-		if strings.Contains(strings.ToLower(testModel), "codex") {
+		if strings.Contains(strings.ToLower(testModel), "codex") &&
+			(channel == nil || channel.Type != constant.ChannelTypeChatCore) {
 			requestPath = "/v1/responses"
 		}
 
@@ -693,7 +694,8 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 	}
 
 	// Responses-only models (e.g. codex series)
-	if strings.Contains(strings.ToLower(model), "codex") {
+	if strings.Contains(strings.ToLower(model), "codex") &&
+		(channel == nil || channel.Type != constant.ChannelTypeChatCore) {
 		return &dto.OpenAIResponsesRequest{
 			Model:  model,
 			Input:  json.RawMessage(`[{"role":"user","content":"hi"}]`),
