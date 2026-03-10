@@ -34,8 +34,6 @@ RUN apt-get update \
     && npm install -g @openai/codex
 
 ENV PYTHONUNBUFFERED=1
-ENV VIRTUAL_ENV=/opt/venv
-ENV PATH="/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ENV CHATCORE_INTERNAL_CHAT_HOST=127.0.0.1
 ENV CHATCORE_INTERNAL_CHAT_PORT=1455
 
@@ -43,9 +41,8 @@ WORKDIR /app
 COPY --from=builder2 /build/new-api /new-api
 COPY --from=builder2 /build/embedded-chatmock /app/embedded-chatmock
 COPY scripts/start-single-service.sh /start-single-service.sh
-RUN python -m venv "$VIRTUAL_ENV" \
-    && python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir -r /app/embedded-chatmock/requirements.txt \
+RUN python -m pip install --no-cache-dir --break-system-packages --upgrade pip \
+    && python -m pip install --no-cache-dir --break-system-packages -r /app/embedded-chatmock/requirements.txt \
     && chmod +x /start-single-service.sh
 
 EXPOSE 3000
