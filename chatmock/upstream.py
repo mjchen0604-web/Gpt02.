@@ -13,6 +13,7 @@ from .http import build_cors_headers
 from .reasoning import split_model_alias
 from .session import ensure_session_id
 from flask import request as flask_request
+from .gateway import GatewayChannel, get_gateway_manager
 from .utils import (
     get_effective_chatgpt_auth_candidates,
     get_max_retry_interval_seconds,
@@ -90,16 +91,34 @@ def start_upstream_request(
     reasoning_param: Dict[str, Any] | None = None,
     service_tier: str | None = None,
     web_search_mode: str | None = None,
+    gateway_channel: GatewayChannel | None = None,
 ):
-    upstream_mode = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
+    upstream_mode = (
+        gateway_channel.transport
+        if isinstance(gateway_channel, GatewayChannel) and gateway_channel.transport
+        else str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
+    )
     verbose = False
     try:
         verbose = bool(current_app.config.get("VERBOSE"))
     except Exception:
         verbose = False
 
+    if upstream_mode == "gateway" and gateway_channel is None:
+        resp = make_response(
+            jsonify({"error": {"message": "Gateway mode requires a selected channel"}}),
+            503,
+        )
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return None, resp
+
     if upstream_mode == "codex-app-server":
-        app_server_url = str(current_app.config.get("CODEX_APP_SERVER_URL") or "").strip()
+        app_server_url = (
+            str(gateway_channel.url).strip()
+            if isinstance(gateway_channel, GatewayChannel) and isinstance(gateway_channel.url, str) and gateway_channel.url.strip()
+            else str(current_app.config.get("CODEX_APP_SERVER_URL") or "").strip()
+        )
         if not app_server_url:
             resp = make_response(
                 jsonify({"error": {"message": "Missing CODEX_APP_SERVER_URL for codex-app-server upstream"}}),
@@ -117,6 +136,9 @@ def start_upstream_request(
                 if verbose:
                     print(f"codex app-server pool candidate lookup failed: {exc}")
                 candidates = []
+        if isinstance(gateway_channel, GatewayChannel) and gateway_channel.auth_label:
+            label = gateway_channel.auth_label.strip()
+            candidates = [item for item in candidates if str(item.get("label") or "").strip() == label]
         if not candidates:
             candidates = [{"label": "default", "url": app_server_url}]
 
@@ -150,9 +172,15 @@ def start_upstream_request(
                 if verbose:
                     print(f"codex app-server upstream failed for {candidate_label} ({candidate_url}): {exc}")
                 continue
+            gateway_manager = get_gateway_manager()
             if manager is not None and hasattr(manager, "wrap_upstream"):
                 try:
                     upstream = manager.wrap_upstream(candidate_label, upstream)
+                except Exception:
+                    pass
+            if gateway_manager is not None and isinstance(gateway_channel, GatewayChannel):
+                try:
+                    upstream = gateway_manager.wrap_upstream(gateway_channel.id, upstream)
                 except Exception:
                     pass
             return upstream, None
@@ -172,6 +200,13 @@ def start_upstream_request(
         return None, resp
 
     auth_candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
+    if isinstance(gateway_channel, GatewayChannel) and gateway_channel.auth_label:
+        expected = gateway_channel.auth_label.strip()
+        auth_candidates = [
+            item
+            for item in auth_candidates
+            if str(item.get("label") or "").strip() == expected
+        ]
     if not auth_candidates:
         resp = make_response(
             jsonify(
@@ -242,6 +277,13 @@ def start_upstream_request(
             time.sleep(sleep_secs)
 
         round_candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
+        if isinstance(gateway_channel, GatewayChannel) and gateway_channel.auth_label:
+            expected = gateway_channel.auth_label.strip()
+            round_candidates = [
+                item
+                for item in round_candidates
+                if str(item.get("label") or "").strip() == expected
+            ]
         if not round_candidates:
             break
 
@@ -295,6 +337,12 @@ def start_upstream_request(
                 return upstream, None
 
             mark_chatgpt_auth_result(label, success=True, status_code=status)
+            gateway_manager = get_gateway_manager()
+            if gateway_manager is not None and isinstance(gateway_channel, GatewayChannel):
+                try:
+                    upstream = gateway_manager.wrap_upstream(gateway_channel.id, upstream)
+                except Exception:
+                    pass
             return upstream, None
 
     if last_upstream is not None:

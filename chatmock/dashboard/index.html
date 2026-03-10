@@ -1,186 +1,455 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ChatMock 控制台</title>
+    <title>ChatMock 管理后台</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=IBM+Plex+Mono:wght@400;500;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/dashboard/styles.css" />
   </head>
   <body>
-    <div class="bg-mesh" aria-hidden="true"></div>
-    <div class="grain" aria-hidden="true"></div>
+    <div class="page-glow page-glow-a" aria-hidden="true"></div>
+    <div class="page-glow page-glow-b" aria-hidden="true"></div>
+    <div class="page-grain" aria-hidden="true"></div>
 
-    <header class="topbar">
-      <div>
-        <p class="kicker">CHATMOCK / MULTI ACCOUNT</p>
-        <h1>ChatMock 轮询控制台</h1>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <p class="sidebar-caption">CHATMOCK 管理中心</p>
+          <h1 class="sidebar-title">中转管理后台</h1>
+          <p class="sidebar-copy">外层采用 new-api 风格的后台框架，底层仍由 chat 核心完成模型转发与账号轮询。</p>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="管理员导航">
+          <a class="sidebar-link active" href="#overview">总览</a>
+          <a class="sidebar-link" href="#operations">运维操作</a>
+          <a class="sidebar-link" href="#gateway">渠道管理</a>
+          <a class="sidebar-link" href="#users">用户管理</a>
+          <a class="sidebar-link" href="#keys">密钥管理</a>
+          <a class="sidebar-link" href="#usage">用量计费</a>
+          <a class="sidebar-link" href="#runtime">运行资产</a>
+          <a class="sidebar-link" href="#system">配置与日志</a>
+        </nav>
+
+        <div class="sidebar-foot">
+          <span class="sidebar-badge">仅管理员可见</span>
+          <p class="sidebar-note">这份控制台用于网关调度、账号凭据、用户令牌、额度计费和服务运维。</p>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="workspace-topbar">
+          <div class="workspace-copy">
+            <p class="workspace-kicker">CHATMOCK / 网关 / 管理后台</p>
+            <h2 class="workspace-title">管理员控制台</h2>
+            <p class="workspace-lead">面板给管理员使用，不面向终端客户；所有入口、状态和配置文案统一改为中文。</p>
+          </div>
+
+          <div class="workspace-actions">
+            <label class="topbar-field">
+              <span>后台管理口令</span>
+              <div class="dashboard-auth">
+                <input id="dashboard-token" type="password" placeholder="请输入后台管理员口令" />
+                <button id="btn-dashboard-token-save" class="btn btn-main">保存口令</button>
+                <button id="btn-dashboard-token-clear" class="btn">清空</button>
+              </div>
+            </label>
+            <p class="hint topbar-hint" id="dashboard-auth-hint">后台鉴权：未检测</p>
+            <div class="status-chip" id="service-chip">检查中</div>
+          </div>
+        </header>
+
+        <main class="content-grid">
+          <section id="overview" class="panel panel-wide hero-panel">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">运行总览</p>
+                <h2>服务状态</h2>
+                <p class="section-desc">集中查看健康状态、监听情况、模型与账号规模，适合部署后快速验收。</p>
+              </div>
+              <div class="tag-cluster">
+                <span class="soft-tag">new-api 风格框架</span>
+                <span class="soft-tag">chat 内核反代</span>
+              </div>
+            </div>
+
+            <div class="metrics">
+              <article class="metric-card">
+                <p class="metric-label">服务状态</p>
+                <p class="metric-value" id="metric-service">-</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">监听状态</p>
+                <p class="metric-value" id="metric-port">-</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">模型数量</p>
+                <p class="metric-value" id="metric-models">-</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">账号数量</p>
+                <p class="metric-value" id="metric-auths">-</p>
+              </article>
+            </div>
+            <p class="hint" id="health-hint">最近检查：-</p>
+          </section>
+
+          <section id="operations" class="panel">
+            <div class="section-head compact">
+              <div>
+                <p class="section-kicker">运维中心</p>
+                <h2>运维操作</h2>
+              </div>
+            </div>
+
+            <div class="action-grid">
+              <button id="btn-refresh" class="btn btn-main">刷新总览</button>
+              <button id="btn-sync" class="btn">同步账号</button>
+              <button id="btn-restart" class="btn">重启服务</button>
+              <button id="btn-start" class="btn">启动服务</button>
+              <button id="btn-stop" class="btn btn-danger">停止服务</button>
+              <button id="btn-models" class="btn">刷新模型</button>
+              <button id="btn-logs" class="btn">刷新日志</button>
+              <button id="btn-config" class="btn">刷新配置</button>
+            </div>
+
+            <div class="upload-auth-wrap">
+              <p class="upload-auth-title">上传 auth.json 凭据文件</p>
+              <input id="auth-files" class="upload-auth-input" type="file" accept=".json,application/json" multiple />
+              <label class="upload-auth-replace">
+                <input id="auth-replace" type="checkbox" />
+                覆盖现有账号池
+              </label>
+              <p class="hint">上传后的凭据会进入多账号池，并按现有策略启动与管理对应的 Codex Fast 实例。</p>
+              <button id="btn-upload-auth" class="btn btn-main">上传凭据</button>
+            </div>
+
+            <pre id="ops-output" class="output-box">等待操作...</pre>
+          </section>
+
+          <section class="panel">
+            <div class="section-head compact">
+              <div>
+                <p class="section-kicker">服务参数</p>
+                <h2>启动设置</h2>
+              </div>
+              <p class="section-desc side-note">修改后自动保存到本地配置文件。</p>
+            </div>
+
+            <div class="settings-grid">
+              <label class="setting-field">
+                <span>轮询策略</span>
+                <select id="set-routing-strategy">
+                  <option value="round-robin">轮询</option>
+                  <option value="random">随机</option>
+                  <option value="first">固定首选</option>
+                </select>
+              </label>
+              <label class="setting-field">
+                <span>请求重试次数</span>
+                <input id="set-request-retry" type="number" min="0" max="10" />
+              </label>
+              <label class="setting-field">
+                <span>最大重试间隔（秒）</span>
+                <input id="set-max-retry-interval" type="number" min="1" max="300" />
+              </label>
+              <label class="setting-field">
+                <span>推理强度</span>
+                <select id="set-reasoning-effort">
+                  <option value="minimal">最低</option>
+                  <option value="low">低</option>
+                  <option value="medium">中</option>
+                  <option value="high">高</option>
+                  <option value="xhigh">极高</option>
+                </select>
+              </label>
+              <label class="setting-field">
+                <span>推理摘要</span>
+                <select id="set-reasoning-summary">
+                  <option value="auto">自动</option>
+                  <option value="concise">简略</option>
+                  <option value="detailed">详细</option>
+                  <option value="none">关闭</option>
+                </select>
+              </label>
+              <label class="setting-field">
+                <span>推理兼容模式</span>
+                <select id="set-reasoning-compat">
+                  <option value="think-tags">think-tags</option>
+                  <option value="legacy">legacy</option>
+                  <option value="o3">o3</option>
+                  <option value="current">current</option>
+                </select>
+              </label>
+              <label class="setting-field">
+                <span>HTTP 代理</span>
+                <input id="set-http-proxy" type="text" placeholder="http://127.0.0.1:7890" />
+              </label>
+              <label class="setting-field">
+                <span>HTTPS 代理</span>
+                <input id="set-https-proxy" type="text" placeholder="http://127.0.0.1:7890" />
+              </label>
+              <label class="setting-field">
+                <span>全局代理</span>
+                <input id="set-all-proxy" type="text" placeholder="socks5://127.0.0.1:7890" />
+              </label>
+              <label class="setting-field">
+                <span>代理例外</span>
+                <input id="set-no-proxy" type="text" placeholder="127.0.0.1,localhost" />
+              </label>
+            </div>
+
+            <div class="toggle-grid">
+              <label class="toggle-item"><input id="set-expose-reasoning-models" type="checkbox" /> 对外暴露推理模型别名</label>
+              <label class="toggle-item"><input id="set-enable-web-search" type="checkbox" /> 默认开启联网搜索</label>
+              <label class="toggle-item"><input id="set-verbose" type="checkbox" /> 输出详细日志</label>
+              <label class="toggle-item"><input id="set-verbose-obfuscation" type="checkbox" /> 混淆敏感日志</label>
+            </div>
+
+            <p class="hint" id="settings-save-hint">自动保存：等待更改</p>
+            <p class="hint">设置文件：<span id="settings-path">-</span></p>
+          </section>
+
+          <section id="gateway" class="panel panel-wide">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">渠道调度</p>
+                <h2>网关渠道管理</h2>
+                <p class="section-desc">这里决定 API 密钥、分组、模型和后端执行通道之间的映射关系。</p>
+              </div>
+              <div class="inline-actions">
+                <button id="btn-gateway-reload" class="btn">重新读取</button>
+                <button id="btn-gateway-save" class="btn btn-main">保存渠道配置</button>
+              </div>
+            </div>
+
+            <label class="setting-field">
+              <span>渠道配置文件路径</span>
+              <input id="set-channels-path" type="text" placeholder="/app/storage/gateway.channels.json" />
+            </label>
+
+            <p class="hint" id="gateway-summary">加载中...</p>
+            <textarea id="gateway-config" class="json-editor" spellcheck="false">加载中...</textarea>
+
+            <div class="section-subhead">
+              <h3>渠道状态</h3>
+              <button id="btn-gateway-status" class="btn">刷新状态</button>
+            </div>
+            <div id="gateway-status-grid" class="gateway-status-grid"></div>
+          </section>
+
+          <section class="panel panel-wide">
+            <div class="section-head compact">
+              <div>
+                <p class="section-kicker">控制平面</p>
+                <h2>控制面总览</h2>
+              </div>
+              <div class="inline-actions">
+                <button id="btn-admin-refresh" class="btn">刷新控制面数据</button>
+              </div>
+            </div>
+            <p class="hint">SQLite 数据库：<span id="admin-db-path">-</span></p>
+          </section>
+
+          <section id="users" class="panel">
+            <div class="section-head compact">
+              <div>
+                <p class="section-kicker">用户体系</p>
+                <h2>用户管理</h2>
+              </div>
+            </div>
+
+            <input id="admin-user-id" type="hidden" />
+            <div class="admin-form-grid">
+              <label class="setting-field">
+                <span>用户名称</span>
+                <input id="admin-user-name" type="text" placeholder="例如：默认团队" />
+              </label>
+              <label class="setting-field">
+                <span>邮箱</span>
+                <input id="admin-user-email" type="text" placeholder="ops@example.com" />
+              </label>
+              <label class="setting-field">
+                <span>状态</span>
+                <select id="admin-user-status">
+                  <option value="active">启用</option>
+                  <option value="disabled">停用</option>
+                </select>
+              </label>
+              <label class="setting-field">
+                <span>月度额度（令牌）</span>
+                <input id="admin-user-quota" type="number" min="0" step="1" placeholder="0 代表不限额" />
+              </label>
+              <label class="setting-field">
+                <span>输入单价（每 100 万令牌）</span>
+                <input id="admin-user-prompt-price" type="number" min="0" step="0.000001" placeholder="0" />
+              </label>
+              <label class="setting-field">
+                <span>输出单价（每 100 万令牌）</span>
+                <input id="admin-user-completion-price" type="number" min="0" step="0.000001" placeholder="0" />
+              </label>
+            </div>
+
+            <div class="inline-actions admin-actions">
+              <button id="btn-user-save" class="btn btn-main">保存用户</button>
+              <button id="btn-user-new" class="btn">清空表单</button>
+            </div>
+
+            <div id="admin-users-grid" class="admin-grid"></div>
+          </section>
+
+          <section id="keys" class="panel">
+            <div class="section-head compact">
+              <div>
+                <p class="section-kicker">访问控制</p>
+                <h2>密钥管理</h2>
+              </div>
+            </div>
+
+            <input id="admin-key-id" type="hidden" />
+            <div class="admin-form-grid">
+              <label class="setting-field">
+                <span>所属用户</span>
+                <select id="admin-key-user-id"></select>
+              </label>
+              <label class="setting-field">
+                <span>密钥名称</span>
+                <input id="admin-key-name" type="text" placeholder="例如：默认入口" />
+              </label>
+              <label class="setting-field">
+                <span>状态</span>
+                <select id="admin-key-status">
+                  <option value="active">启用</option>
+                  <option value="disabled">停用</option>
+                </select>
+              </label>
+              <label class="setting-field">
+                <span>自定义访问密钥（可留空自动生成）</span>
+                <input id="admin-key-token" type="text" placeholder="留空则自动生成" />
+              </label>
+              <label class="setting-field">
+                <span>分组</span>
+                <input id="admin-key-groups" type="text" placeholder="例如：default,fast" />
+              </label>
+              <label class="setting-field">
+                <span>可用模型</span>
+                <input id="admin-key-models" type="text" placeholder="例如：*,gpt-5.4-fast*" />
+              </label>
+              <label class="setting-field">
+                <span>到期时间（UTC ISO 格式）</span>
+                <input id="admin-key-expires-at" type="text" placeholder="2026-12-31T23:59:59+00:00" />
+              </label>
+            </div>
+
+            <div class="inline-actions admin-actions">
+              <button id="btn-key-save" class="btn btn-main">保存密钥</button>
+              <button id="btn-key-new" class="btn">清空表单</button>
+            </div>
+
+            <div id="admin-keys-grid" class="admin-grid"></div>
+          </section>
+
+          <section id="usage" class="panel panel-wide">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">计费观察</p>
+                <h2>用量与账单</h2>
+                <p class="section-desc">按用户和密钥聚合统计本月调用量与估算费用。</p>
+              </div>
+            </div>
+
+            <p class="hint" id="admin-usage-window">统计窗口：-</p>
+
+            <div class="usage-summary-grid">
+              <article class="metric-card">
+                <p class="metric-label">输入令牌</p>
+                <p class="metric-value" id="admin-usage-prompt">-</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">输出令牌</p>
+                <p class="metric-value" id="admin-usage-completion">-</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">总令牌</p>
+                <p class="metric-value" id="admin-usage-total">-</p>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">估算费用</p>
+                <p class="metric-value" id="admin-usage-cost">-</p>
+              </article>
+            </div>
+
+            <div class="config-wrap">
+              <div>
+                <h3>按用户汇总</h3>
+                <div id="admin-usage-users" class="admin-grid"></div>
+              </div>
+              <div>
+                <h3>按密钥汇总</h3>
+                <div id="admin-usage-keys" class="admin-grid"></div>
+              </div>
+            </div>
+
+            <h3>最近事件</h3>
+            <pre id="admin-usage-events" class="output-box">加载中...</pre>
+          </section>
+
+          <section id="runtime" class="panel">
+            <div class="section-head compact">
+              <div>
+                <p class="section-kicker">运行资产</p>
+                <h2>账号池</h2>
+              </div>
+            </div>
+            <div id="accounts-grid" class="accounts-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head compact">
+              <div>
+                <p class="section-kicker">运行资产</p>
+                <h2>模型列表</h2>
+              </div>
+            </div>
+            <div id="models-grid" class="model-grid"></div>
+          </section>
+
+          <section id="system" class="panel panel-wide">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">配置视图</p>
+                <h2>配置快照</h2>
+              </div>
+            </div>
+            <div class="config-wrap">
+              <div>
+                <h3>本地配置</h3>
+                <pre id="local-config" class="code-box">加载中...</pre>
+              </div>
+              <div>
+                <h3>运行配置</h3>
+                <pre id="active-config" class="code-box">加载中...</pre>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel panel-wide">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">日志观测</p>
+                <h2>日志尾部</h2>
+              </div>
+            </div>
+            <pre id="logs-box" class="log-box">加载中...</pre>
+          </section>
+        </main>
       </div>
-      <div class="status-chip" id="service-chip">CHECKING...</div>
-    </header>
-
-    <main class="layout">
-      <section class="panel panel-wide">
-        <h2>运行状态</h2>
-        <div class="metrics">
-          <article class="metric-card">
-            <p class="metric-label">服务状态</p>
-            <p class="metric-value" id="metric-service">-</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">监听状态</p>
-            <p class="metric-value" id="metric-port">-</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">模型数量</p>
-            <p class="metric-value" id="metric-models">-</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">账号数量</p>
-            <p class="metric-value" id="metric-auths">-</p>
-          </article>
-        </div>
-        <p class="hint" id="health-hint">最近检查：-</p>
-      </section>
-
-      <section class="panel">
-        <h2>运维操作</h2>
-        <div class="action-grid">
-          <button id="btn-refresh" class="btn btn-main">刷新总览</button>
-          <button id="btn-sync" class="btn">同步账号</button>
-          <button id="btn-restart" class="btn">重启服务</button>
-          <button id="btn-start" class="btn">启动服务</button>
-          <button id="btn-stop" class="btn btn-danger">停止服务</button>
-          <button id="btn-models" class="btn">刷新模型</button>
-          <button id="btn-logs" class="btn">刷新日志</button>
-          <button id="btn-config" class="btn">刷新配置</button>
-        </div>
-        <div class="upload-auth-wrap">
-          <p class="upload-auth-title">上传 auth.json（支持多选）</p>
-          <input id="auth-files" class="upload-auth-input" type="file" accept=".json,application/json" multiple />
-          <label class="upload-auth-replace">
-            <input id="auth-replace" type="checkbox" />
-            Replace existing account pool
-          </label>
-          <p class="hint">
-            Uploaded credentials start managed Codex fast instances and remain in the multi-account pool for backend
-            rotation.
-          </p>
-          <button id="btn-upload-auth" class="btn btn-main">Upload Credentials</button>
-        </div>
-        <pre id="ops-output" class="output-box">等待操作...</pre>
-      </section>
-
-      <section class="panel">
-        <h2>启动参数</h2>
-        <div class="settings-grid">
-          <label class="setting-field">
-            <span>Routing Strategy</span>
-            <select id="set-routing-strategy">
-              <option value="round-robin">round-robin</option>
-              <option value="random">random</option>
-              <option value="first">first</option>
-            </select>
-          </label>
-          <label class="setting-field">
-            <span>Request Retry</span>
-            <input id="set-request-retry" type="number" min="0" max="10" />
-          </label>
-          <label class="setting-field">
-            <span>Max Retry Interval (s)</span>
-            <input id="set-max-retry-interval" type="number" min="1" max="300" />
-          </label>
-          <label class="setting-field">
-            <span>Reasoning Effort</span>
-            <select id="set-reasoning-effort">
-              <option value="minimal">minimal</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-            </select>
-          </label>
-          <label class="setting-field">
-            <span>Reasoning Summary</span>
-            <select id="set-reasoning-summary">
-              <option value="auto">auto</option>
-              <option value="concise">concise</option>
-              <option value="detailed">detailed</option>
-              <option value="none">none</option>
-            </select>
-          </label>
-          <label class="setting-field">
-            <span>Reasoning Compat</span>
-            <select id="set-reasoning-compat">
-              <option value="think-tags">think-tags</option>
-              <option value="legacy">legacy</option>
-              <option value="o3">o3</option>
-              <option value="current">current</option>
-            </select>
-          </label>
-          <label class="setting-field">
-            <span>HTTP_PROXY</span>
-            <input id="set-http-proxy" type="text" placeholder="http://127.0.0.1:7890" />
-          </label>
-          <label class="setting-field">
-            <span>HTTPS_PROXY</span>
-            <input id="set-https-proxy" type="text" placeholder="http://127.0.0.1:7890" />
-          </label>
-          <label class="setting-field">
-            <span>ALL_PROXY</span>
-            <input id="set-all-proxy" type="text" placeholder="socks5://127.0.0.1:7890" />
-          </label>
-          <label class="setting-field">
-            <span>NO_PROXY</span>
-            <input id="set-no-proxy" type="text" placeholder="127.0.0.1,localhost" />
-          </label>
-        </div>
-
-        <div class="toggle-grid">
-          <label class="toggle-item"><input id="set-expose-reasoning-models" type="checkbox" /> Expose reasoning models</label>
-          <label class="toggle-item"><input id="set-enable-web-search" type="checkbox" /> Enable web search by default</label>
-          <label class="toggle-item"><input id="set-verbose" type="checkbox" /> Verbose</label>
-          <label class="toggle-item"><input id="set-verbose-obfuscation" type="checkbox" /> Verbose obfuscation</label>
-        </div>
-
-        <p class="hint" id="settings-save-hint">自动保存：等待更改</p>
-        <p class="hint">settings file: <span id="settings-path">-</span></p>
-      </section>
-
-      <section class="panel">
-        <h2>账号池</h2>
-        <div id="accounts-grid" class="accounts-grid"></div>
-      </section>
-
-      <section class="panel">
-        <h2>模型列表</h2>
-        <div id="models-grid" class="model-grid"></div>
-      </section>
-
-      <section class="panel panel-wide">
-        <h2>配置快照</h2>
-        <div class="config-wrap">
-          <div>
-            <h3>本地配置</h3>
-            <pre id="local-config" class="code-box">加载中...</pre>
-          </div>
-          <div>
-            <h3>运行配置</h3>
-            <pre id="active-config" class="code-box">加载中...</pre>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel panel-wide">
-        <h2>日志尾部</h2>
-        <pre id="logs-box" class="log-box">加载中...</pre>
-      </section>
-    </main>
+    </div>
 
     <div id="toast" class="toast"></div>
     <script src="/dashboard/app.js" defer></script>

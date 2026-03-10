@@ -8,7 +8,9 @@ from .config import (
     GPT5_CODEX_INSTRUCTIONS,
     UPSTREAM_MODE_DEFAULT,
 )
+from .control_plane import ControlPlaneManager, default_control_db_path
 from .codex_manager import CodexAppServerPoolManager
+from .gateway import GatewayManager
 from .http import build_cors_headers
 from .routes_anthropic import anthropic_bp
 from .routes_dashboard import apply_persisted_dashboard_settings, dashboard_bp
@@ -65,11 +67,54 @@ def create_app(
     manager = CodexAppServerPoolManager(str(app.config.get("CODEX_APP_SERVER_URL") or normalized_codex_app_server_url))
     app.config["CODEX_APP_SERVER_MANAGER"] = manager
     manager.autostart_if_possible()
+    app.config["GATEWAY_MANAGER"] = GatewayManager()
+    app.config["CONTROL_PLANE_MANAGER"] = ControlPlaneManager(default_control_db_path())
 
     @app.get("/")
     @app.get("/health")
     def health():
         return jsonify({"status": "ok"})
+
+    @app.before_request
+    def _gateway_auth():
+        manager = app.config.get("GATEWAY_MANAGER")
+        control_plane = app.config.get("CONTROL_PLANE_MANAGER")
+        if manager is None or not hasattr(manager, "is_enabled") or not manager.is_enabled():
+            return None
+        from flask import request
+
+        dashboard_api_paths = {
+            "/api/health",
+            "/api/accounts",
+            "/api/models",
+            "/api/config",
+            "/api/settings",
+            "/api/logs",
+            "/api/dashboard/auth-status",
+        }
+        if request.method == "OPTIONS":
+            return None
+        if request.path in ("/", "/health"):
+            return None
+        if request.path.startswith("/dashboard"):
+            return None
+        if request.path in dashboard_api_paths:
+            return None
+        if request.path.startswith("/api/actions/") or request.path.startswith("/api/gateway/") or request.path.startswith("/api/admin/"):
+            return None
+        auth_resp = manager.authorize_request()
+        if auth_resp is not None:
+            return auth_resp
+        if control_plane is not None and hasattr(control_plane, "authorize_gateway_token"):
+            token = ""
+            auth_header = str(request.headers.get("Authorization") or "").strip()
+            if auth_header.lower().startswith("bearer "):
+                token = auth_header[7:].strip()
+            if not token:
+                token = str(request.headers.get("x-api-key") or request.headers.get("api-key") or "").strip()
+            if token:
+                return control_plane.authorize_gateway_token(token)
+        return None
 
     @app.after_request
     def _cors(resp):

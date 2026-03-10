@@ -17,10 +17,16 @@ services:
         value: /app/storage
       - key: CODEX_HOME
         value: /app/storage/.codex
+      - key: CHATMOCK_CONTROL_DB_PATH
+        value: /app/storage/chatmock-control.db
       - key: CHATGPT_LOCAL_UPSTREAM
         value: codex-app-server
       - key: CHATGPT_LOCAL_CODEX_APP_SERVER_URL
         value: ws://127.0.0.1:8787
+      - key: CHATGPT_LOCAL_CHANNELS_PATH
+        value: /app/storage/gateway.channels.json
+      - key: CHATMOCK_GATEWAY_ALLOW_ANONYMOUS
+        value: "false"
       - key: CHATMOCK_MANAGE_CODEX_APP_SERVER
         value: "true"
       - key: CHATMOCK_AUTO_START_CODEX_APP_SERVER
@@ -34,4 +40,8 @@ services:
       - key: CODEX_AUTH_B64
         sync: false
       - key: CODEX_CONFIG_B64
+        sync: false
+      - key: GATEWAY_CHANNELS_B64
+        sync: false
+      - key: CHATMOCK_DASHBOARD_ADMIN_TOKEN
         sync: false

@@ -4,9 +4,11 @@ import json
 import uuid
 from typing import Any, Dict, List, Tuple
 
-from flask import Blueprint, Response, current_app, jsonify, make_response, request
+from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
+from .control_plane import get_control_plane_manager
+from .gateway import get_gateway_manager
 from .http import build_cors_headers
 from .limits import record_rate_limits_from_response
 from .reasoning import (
@@ -16,6 +18,7 @@ from .reasoning import (
     extract_service_tier_from_model_name,
 )
 from .upstream import normalize_model_name, start_upstream_request
+from .utils import get_request_retry_limit
 
 
 anthropic_bp = Blueprint("anthropic", __name__)
@@ -29,6 +32,39 @@ def _log_json(prefix: str, payload: Any) -> None:
             print(f"{prefix}\n{payload}")
         except Exception:
             pass
+
+
+def _upstream_channel_id(upstream: Any) -> str:
+    return str(getattr(upstream, "channel_id", "") or "")
+
+
+def _record_control_plane_usage(
+    *,
+    endpoint: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    status_code: int,
+    request_id: str = "",
+    channel_id: str = "",
+) -> None:
+    manager = get_control_plane_manager()
+    if manager is None:
+        return
+    try:
+        manager.record_usage(
+            endpoint=endpoint,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            status_code=status_code,
+            request_id=request_id,
+            channel_id=channel_id,
+        )
+    except Exception:
+        pass
 
 
 def _instructions_for_model(model: str) -> str:
@@ -65,6 +101,101 @@ def _error_response(message: str, status: int = 400, err_type: str = "invalid_re
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
+
+
+def _gateway_is_retryable_status(status_code: int) -> bool:
+    return status_code in (408, 429) or 500 <= status_code <= 599
+
+
+def _gateway_response_message(response: Response) -> str:
+    try:
+        body = response.get_data(as_text=True)
+        parsed = json.loads(body) if body else {}
+        if isinstance(parsed, dict):
+            error = parsed.get("error")
+            if isinstance(error, dict):
+                return str(error.get("message") or body or "gateway error")
+        return body or "gateway error"
+    except Exception:
+        return "gateway error"
+
+
+def _resolve_gateway_upstream(
+    *,
+    payload: Dict[str, Any],
+    gateway_model: str,
+    start_kwargs: Dict[str, Any],
+) -> tuple[Response | None, Any | None, Response | None]:
+    manager = get_gateway_manager()
+    if manager is None or not manager.is_enabled():
+        return None, None, None
+
+    group = manager.requested_group(payload)
+    channels = manager.ordered_channels("anthropic", gateway_model or "*", group)
+    if not channels:
+        return None, None, _error_response(
+            f"No gateway channel matches model '{gateway_model or '*'}' in group '{group}'",
+            503,
+            "api_error",
+        )
+
+    max_attempts = max(1, min(len(channels), get_request_retry_limit() + 1))
+    last_error: Response | None = None
+
+    for index, channel in enumerate(channels[:max_attempts]):
+        is_last_attempt = index >= (max_attempts - 1)
+        if channel.transport not in ("chatgpt-backend", "codex-app-server"):
+            last_error = _error_response(
+                f"Unsupported gateway transport '{channel.transport}' on channel '{channel.id}'. "
+                "Gateway mode keeps ChatMock as the proxy core; use chatgpt-backend or codex-app-server.",
+                500,
+                "api_error",
+            )
+            if not is_last_attempt:
+                continue
+            return None, None, last_error
+
+        upstream, error_resp = start_upstream_request(gateway_channel=channel, **start_kwargs)
+        if error_resp is not None:
+            status = int(getattr(error_resp, "status_code", 502) or 502)
+            if _gateway_is_retryable_status(status):
+                manager.mark_channel_result(
+                    channel.id,
+                    success=False,
+                    status_code=status,
+                    error_message=_gateway_response_message(error_resp),
+                )
+                if not is_last_attempt:
+                    continue
+            return None, None, error_resp
+
+        if upstream is None:
+            last_error = _error_response(
+                f"Gateway channel '{channel.id}' did not return an upstream response",
+                502,
+                "api_error",
+            )
+            if not is_last_attempt:
+                continue
+            return None, None, last_error
+
+        status = int(getattr(upstream, "status_code", 0) or 0)
+        if _gateway_is_retryable_status(status):
+            manager.mark_channel_result(
+                channel.id,
+                success=False,
+                status_code=status,
+                error_message=f"retryable status {status}",
+            )
+            if not is_last_attempt:
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+                continue
+        return None, upstream, None
+
+    return None, None, last_error or _error_response("No gateway channel is available", 503, "api_error")
 
 
 def _decode_json_body(raw: str) -> Dict[str, Any] | None:
@@ -347,7 +478,7 @@ def _tool_use_payload_from_item(item: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 
-def _anthropic_stream(upstream, model_out: str, verbose: bool):
+def _anthropic_stream(upstream, model_out: str, verbose: bool, *, on_complete=None):
     def _emit(event: str, payload: Dict[str, Any]):
         data = f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
         if verbose:
@@ -364,6 +495,7 @@ def _anthropic_stream(upstream, model_out: str, verbose: bool):
     next_block_index = 0
     text_open = False
     text_index = -1
+    completed_recorded = False
     try:
         yield _emit(
             "message_start",
@@ -473,6 +605,19 @@ def _anthropic_stream(upstream, model_out: str, verbose: bool):
                 return
 
             if kind == "response.completed":
+                if callable(on_complete):
+                    try:
+                        on_complete(
+                            response_id,
+                            {
+                                "input_tokens": usage_in,
+                                "output_tokens": usage_out,
+                                "total_tokens": usage_in + usage_out,
+                            },
+                        )
+                        completed_recorded = True
+                    except Exception:
+                        pass
                 break
 
         if text_open:
@@ -488,6 +633,18 @@ def _anthropic_stream(upstream, model_out: str, verbose: bool):
         )
         yield _emit("message_stop", {"type": "message_stop"})
     finally:
+        if not completed_recorded and callable(on_complete) and (usage_in > 0 or usage_out > 0):
+            try:
+                on_complete(
+                    response_id,
+                    {
+                        "input_tokens": usage_in,
+                        "output_tokens": usage_out,
+                        "total_tokens": usage_in + usage_out,
+                    },
+                )
+            except Exception:
+                pass
         upstream.close()
 
 
@@ -545,16 +702,33 @@ def messages() -> Response:
         allowed_efforts=allowed_efforts_for_model(model),
     )
 
-    upstream, error_resp = start_upstream_request(
-        model,
-        input_items,
-        instructions=instructions,
-        tools=tools_responses,
-        tool_choice=tool_choice,
-        parallel_tool_calls=parallel_tool_calls,
-        reasoning_param=reasoning_param,
-        service_tier=service_tier,
+    proxy_resp, upstream, error_resp = _resolve_gateway_upstream(
+        payload=payload,
+        gateway_model=(requested_model or model),
+        start_kwargs={
+            "model": model,
+            "input_items": input_items,
+            "instructions": instructions,
+            "tools": tools_responses,
+            "tool_choice": tool_choice,
+            "parallel_tool_calls": parallel_tool_calls,
+            "reasoning_param": reasoning_param,
+            "service_tier": service_tier,
+        },
     )
+    if proxy_resp is not None:
+        return proxy_resp
+    if upstream is None and error_resp is None:
+        upstream, error_resp = start_upstream_request(
+            model,
+            input_items,
+            instructions=instructions,
+            tools=tools_responses,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            reasoning_param=reasoning_param,
+            service_tier=service_tier,
+        )
     if error_resp is not None:
         status = int(getattr(error_resp, "status_code", 401) or 401)
         body = error_resp.get_data(as_text=True) if hasattr(error_resp, "get_data") else ""
@@ -582,8 +756,21 @@ def messages() -> Response:
 
     model_out = requested_model or model
     if bool(payload.get("stream")):
+        def _on_stream_complete(response_id: str, usage: Dict[str, int] | None) -> None:
+            usage_payload = usage or {}
+            _record_control_plane_usage(
+                endpoint="/v1/messages",
+                model=model_out,
+                prompt_tokens=int(usage_payload.get("input_tokens") or 0),
+                completion_tokens=int(usage_payload.get("output_tokens") or 0),
+                total_tokens=int(usage_payload.get("total_tokens") or 0),
+                status_code=int(upstream.status_code or 200),
+                request_id=response_id,
+                channel_id=_upstream_channel_id(upstream),
+            )
+
         resp = Response(
-            _anthropic_stream(upstream, model_out, verbose),
+            stream_with_context(_anthropic_stream(upstream, model_out, verbose, on_complete=_on_stream_complete)),
             status=upstream.status_code,
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
@@ -681,6 +868,16 @@ def messages() -> Response:
     if verbose:
         _log_json("OUT POST /v1/messages", message_obj)
 
+    _record_control_plane_usage(
+        endpoint="/v1/messages",
+        model=model_out,
+        prompt_tokens=usage_in,
+        completion_tokens=usage_out,
+        total_tokens=usage_in + usage_out,
+        status_code=int(upstream.status_code or 200),
+        request_id=response_id,
+        channel_id=_upstream_channel_id(upstream),
+    )
     resp = make_response(jsonify(message_obj), upstream.status_code)
     if service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier

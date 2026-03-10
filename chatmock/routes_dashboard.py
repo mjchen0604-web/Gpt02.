@@ -5,11 +5,14 @@ import hashlib
 import json
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, current_app, jsonify, make_response, request, send_from_directory
 
+from .control_plane import default_control_db_path, get_control_plane_manager
+from .gateway import get_gateway_manager
 from .utils import (
     get_chatgpt_auth_records,
     get_max_retry_interval_seconds,
@@ -25,6 +28,37 @@ _VALID_ROUTING_STRATEGIES = {"round-robin", "random", "first"}
 _VALID_REASONING_EFFORT = {"minimal", "low", "medium", "high", "xhigh"}
 _VALID_REASONING_SUMMARY = {"auto", "concise", "detailed", "none"}
 _VALID_REASONING_COMPAT = {"legacy", "o3", "think-tags", "current"}
+
+
+def _dashboard_admin_token() -> str:
+    return _clean_string(os.getenv("CHATMOCK_DASHBOARD_ADMIN_TOKEN"))
+
+
+def _dashboard_request_token() -> str:
+    auth_header = _clean_string(request.headers.get("Authorization"))
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    header_token = _clean_string(
+        request.headers.get("X-Dashboard-Token") or request.headers.get("X-Admin-Token")
+    )
+    if header_token:
+        return header_token
+    return _clean_string(request.args.get("dashboard_token"))
+
+
+@dashboard_bp.before_request
+def dashboard_require_admin_token():
+    expected = _dashboard_admin_token()
+    if not expected:
+        return None
+    if request.method == "OPTIONS":
+        return None
+    if request.path in ("/dashboard", "/dashboard/", "/dashboard/app.js", "/dashboard/styles.css", "/api/dashboard/auth-status"):
+        return None
+    provided = _dashboard_request_token()
+    if secrets.compare_digest(provided, expected):
+        return None
+    return make_response(jsonify({"ok": False, "error": "dashboard admin token required"}), 401)
 
 
 def _model_ids(expose_variants: bool) -> List[str]:
@@ -186,6 +220,23 @@ def _runtime_codex_manager():
     return current_app.config.get("CODEX_APP_SERVER_MANAGER")
 
 
+def _runtime_gateway_manager():
+    return get_gateway_manager()
+
+
+def _runtime_control_plane_manager():
+    return get_control_plane_manager()
+
+
+def _invalidate_gateway_manager() -> None:
+    manager = _runtime_gateway_manager()
+    if manager is not None and hasattr(manager, "invalidate"):
+        try:
+            manager.invalidate()
+        except Exception:
+            pass
+
+
 def _settings_path() -> Path:
     explicit = (os.getenv("CHATMOCK_DASHBOARD_SETTINGS_PATH") or "").strip()
     if explicit:
@@ -193,6 +244,21 @@ def _settings_path() -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
     return _auth_storage_root() / "_dashboard_settings.json"
+
+
+def _gateway_channels_default_path() -> Path:
+    explicit = (os.getenv("CHATGPT_LOCAL_CHANNELS_PATH") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    data_dir = (os.getenv("CHATMOCK_DATA_DIR") or "").strip()
+    if data_dir:
+        return Path(data_dir).expanduser() / "gateway.channels.json"
+
+    auth_root = _auth_storage_root()
+    if auth_root.name == "accounts":
+        return auth_root.parent / "gateway.channels.json"
+    return auth_root / "gateway.channels.json"
 
 
 def _read_settings_file() -> Dict[str, Any]:
@@ -229,6 +295,10 @@ def _current_settings_snapshot(app=None) -> Dict[str, Any]:
     runtime_app = app or _get_runtime_app()
     stored = _read_settings_file()
     auth_files = _merge_auth_files(_current_auth_files(), _discover_auth_files(_auth_storage_root()), replace=False)
+    channels_path = _clean_string(
+        os.getenv("CHATGPT_LOCAL_CHANNELS_PATH") or stored.get("channelsPath"),
+        default=str(_gateway_channels_default_path()),
+    )
 
     if runtime_app is not None:
         reasoning_effort = str(runtime_app.config.get("REASONING_EFFORT", "medium"))
@@ -268,6 +338,7 @@ def _current_settings_snapshot(app=None) -> Dict[str, Any]:
         "noProxy": os.getenv("NO_PROXY", ""),
         "uploadReplaceDefault": _bool_value(stored.get("uploadReplaceDefault"), default=False),
         "authFiles": auth_files,
+        "channelsPath": channels_path,
     }
 
 
@@ -332,6 +403,7 @@ def _merge_payload_settings(payload: Dict[str, Any], current: Dict[str, Any]) ->
             default=current["uploadReplaceDefault"],
         ),
         "authFiles": _parse_auth_files_payload(incoming.get("authFiles"), current["authFiles"]),
+        "channelsPath": _clean_string(incoming.get("channelsPath", current["channelsPath"])),
     }
     return settings
 
@@ -353,6 +425,7 @@ def _apply_settings(settings: Dict[str, Any], *, app=None, persist: bool) -> Dic
     os.environ["CHATGPT_LOCAL_ENABLE_WEB_SEARCH"] = "1" if merged["enableWebSearch"] else "0"
     os.environ["CHATGPT_LOCAL_VERBOSE"] = "1" if merged["verbose"] else "0"
     os.environ["CHATGPT_LOCAL_VERBOSE_OBFUSCATION"] = "1" if merged["verboseObfuscation"] else "0"
+    _set_env_or_clear("CHATGPT_LOCAL_CHANNELS_PATH", merged["channelsPath"])
 
     _set_env_or_clear("HTTP_PROXY", merged["httpProxy"])
     _set_env_or_clear("HTTPS_PROXY", merged["httpsProxy"])
@@ -478,6 +551,20 @@ def _fast_instance_map() -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _dashboard_model_ids() -> List[str]:
+    gateway_manager = _runtime_gateway_manager()
+    if gateway_manager is not None and gateway_manager.is_enabled():
+        group = gateway_manager.requested_group()
+        model_ids: List[str] = []
+        for family in ("openai", "anthropic", "ollama"):
+            for model_id in gateway_manager.list_public_models(family, group):
+                if model_id not in model_ids:
+                    model_ids.append(model_id)
+        if model_ids:
+            return model_ids
+    return _model_ids(bool(current_app.config.get("EXPOSE_REASONING_MODELS")))
+
+
 @dashboard_bp.get("/dashboard")
 @dashboard_bp.get("/dashboard/")
 def dashboard_index():
@@ -497,14 +584,22 @@ def dashboard_css():
 @dashboard_bp.get("/api/health")
 def dashboard_health():
     records = get_chatgpt_auth_records()
-    models = _model_ids(bool(current_app.config.get("EXPOSE_REASONING_MODELS")))
+    models = _dashboard_model_ids()
     service = _service_status()
+    gateway_manager = _runtime_gateway_manager()
+    gateway_snapshot = gateway_manager.config_snapshot() if gateway_manager is not None else {"path": "", "channels": [], "api_keys": []}
     payload = {
         "now": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "service": service,
         "listening": bool(service.get("listening")),
         "models": {"count": len(models), "ids": models, "error": ""},
         "accounts": {"count": len(records)},
+        "gateway": {
+            "enabled": bool(gateway_manager is not None and gateway_manager.is_enabled()),
+            "path": gateway_snapshot.get("path", ""),
+            "channels": len(gateway_snapshot.get("channels") or []),
+            "apiKeys": len(gateway_snapshot.get("api_keys") or []),
+        },
         "routing": {
             "strategy": (os.getenv("CHATGPT_LOCAL_ROUTING_STRATEGY") or "round-robin"),
             "request_retry": get_request_retry_limit(),
@@ -512,6 +607,11 @@ def dashboard_health():
         },
     }
     return jsonify(payload)
+
+
+@dashboard_bp.get("/api/dashboard/auth-status")
+def dashboard_auth_status():
+    return jsonify({"ok": True, "required": bool(_dashboard_admin_token())})
 
 
 @dashboard_bp.get("/api/accounts")
@@ -537,7 +637,7 @@ def dashboard_accounts():
 
 @dashboard_bp.get("/api/models")
 def dashboard_models():
-    ids = _model_ids(bool(current_app.config.get("EXPOSE_REASONING_MODELS")))
+    ids = _dashboard_model_ids()
     return jsonify({"count": len(ids), "ids": ids})
 
 
@@ -545,9 +645,13 @@ def dashboard_models():
 def dashboard_config():
     settings = _current_settings_snapshot()
     service = _service_status()
+    gateway_manager = _runtime_gateway_manager()
+    control_plane = _runtime_control_plane_manager()
+    gateway_snapshot = gateway_manager.config_snapshot() if gateway_manager is not None else {"path": "", "channels": [], "api_keys": []}
     local = {
         "CHATGPT_LOCAL_HOME": os.getenv("CHATGPT_LOCAL_HOME", ""),
         "CHATGPT_LOCAL_AUTH_FILES": os.getenv("CHATGPT_LOCAL_AUTH_FILES", ""),
+        "CHATGPT_LOCAL_CHANNELS_PATH": settings["channelsPath"],
         "CHATGPT_LOCAL_ROUTING_STRATEGY": settings["routingStrategy"],
         "CHATGPT_LOCAL_REQUEST_RETRY": str(settings["requestRetry"]),
         "CHATGPT_LOCAL_MAX_RETRY_INTERVAL": str(settings["maxRetryInterval"]),
@@ -567,7 +671,9 @@ def dashboard_config():
         "CHATMOCK_MANAGE_CODEX_APP_SERVER": os.getenv("CHATMOCK_MANAGE_CODEX_APP_SERVER", ""),
         "CHATGPT_LOCAL_UPSTREAM": os.getenv("CHATGPT_LOCAL_UPSTREAM", ""),
         "CHATGPT_LOCAL_CODEX_APP_SERVER_URL": os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL", ""),
+        "CHATMOCK_CONTROL_DB_PATH": (control_plane.db_path if control_plane is not None else default_control_db_path()),
         "CODEX_HOME": os.getenv("CODEX_HOME", ""),
+        "gateway": gateway_snapshot,
         "service": service,
     }
     return jsonify(
@@ -599,6 +705,233 @@ def dashboard_save_settings():
 
     settings = _apply_settings(payload, persist=True)
     return jsonify({"ok": True, "settings": settings, "settingsPath": str(_settings_path())})
+
+
+@dashboard_bp.get("/api/gateway/config")
+def dashboard_gateway_config():
+    manager = _runtime_gateway_manager()
+    current_settings = _current_settings_snapshot()
+    path_value = current_settings["channelsPath"]
+    if manager is not None:
+        raw_config = manager.load_raw_config()
+        snapshot = manager.config_snapshot()
+        actual_path = manager.current_config_path() or path_value
+    else:
+        actual_path = path_value
+        file_path = Path(actual_path).expanduser() if actual_path else _gateway_channels_default_path()
+        try:
+            raw_config = json.loads(file_path.read_text(encoding="utf-8")) if file_path.exists() else {}
+        except Exception:
+            raw_config = {}
+        snapshot = {
+            "path": actual_path,
+            "channels": [item.get("id") for item in raw_config.get("channels", []) if isinstance(item, dict)],
+            "api_keys": [item.get("name") for item in raw_config.get("api_keys", []) if isinstance(item, dict)],
+        }
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+    raw_config.setdefault("api_keys", [])
+    raw_config.setdefault("channels", [])
+    validation_errors = manager.validate_raw_config(raw_config) if manager is not None else []
+    file_path = Path(actual_path).expanduser() if actual_path else _gateway_channels_default_path()
+    return jsonify(
+        {
+            "ok": True,
+            "path": str(file_path),
+            "defaultPath": str(_gateway_channels_default_path()),
+            "exists": bool(file_path.exists()),
+            "summary": snapshot,
+            "validationErrors": validation_errors,
+            "config": json.dumps(raw_config, ensure_ascii=False, indent=2),
+        }
+    )
+
+
+@dashboard_bp.get("/api/gateway/status")
+def dashboard_gateway_status():
+    manager = _runtime_gateway_manager()
+    if manager is None:
+        return jsonify({"ok": True, "enabled": False, "path": "", "channels": []})
+    snapshot = manager.config_snapshot()
+    return jsonify(
+        {
+            "ok": True,
+            "enabled": bool(manager.is_enabled()),
+            "path": snapshot.get("path", ""),
+            "apiKeys": snapshot.get("api_keys", []),
+            "channels": manager.channel_status_snapshot(),
+        }
+    )
+
+
+@dashboard_bp.post("/api/gateway/config")
+def dashboard_save_gateway_config():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return make_response(jsonify({"ok": False, "error": "invalid JSON payload"}), 400)
+
+    path_value = _clean_string(payload.get("path"), default=str(_gateway_channels_default_path()))
+    raw_config = payload.get("config")
+    if isinstance(raw_config, str):
+        try:
+            raw_config = json.loads(raw_config)
+        except Exception as exc:
+            return make_response(jsonify({"ok": False, "error": f"config is not valid JSON: {exc}"}), 400)
+    if raw_config is None:
+        raw_config = {}
+    if not isinstance(raw_config, dict):
+        return make_response(jsonify({"ok": False, "error": "config must be a JSON object"}), 400)
+
+    raw_config.setdefault("api_keys", [])
+    raw_config.setdefault("channels", [])
+
+    manager = _runtime_gateway_manager()
+    if manager is not None:
+        validation_errors = manager.validate_raw_config(raw_config)
+    else:
+        validation_errors = []
+    if validation_errors:
+        return make_response(jsonify({"ok": False, "error": "invalid gateway config", "details": validation_errors}), 400)
+
+    _apply_settings({"channelsPath": path_value}, persist=True)
+    if manager is not None:
+        saved_path = manager.save_raw_config(raw_config, path=path_value)
+        snapshot = manager.config_snapshot()
+    else:
+        target = Path(path_value).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fp:
+            json.dump(raw_config, fp, ensure_ascii=False, indent=2)
+        saved_path = str(target)
+        snapshot = {
+            "path": saved_path,
+            "channels": [item.get("id") for item in raw_config.get("channels", []) if isinstance(item, dict)],
+            "api_keys": [item.get("name") for item in raw_config.get("api_keys", []) if isinstance(item, dict)],
+        }
+
+    return jsonify(
+        {
+            "ok": True,
+            "path": saved_path,
+            "settingsPath": str(_settings_path()),
+            "summary": snapshot,
+        }
+    )
+
+
+@dashboard_bp.get("/api/admin/users")
+def dashboard_admin_users():
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    users = manager.list_users()
+    return jsonify({"ok": True, "dbPath": manager.db_path, "count": len(users), "users": users})
+
+
+@dashboard_bp.post("/api/admin/users")
+def dashboard_admin_save_user():
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return make_response(jsonify({"ok": False, "error": "invalid JSON payload"}), 400)
+    try:
+        user = manager.save_user(payload)
+        _invalidate_gateway_manager()
+        return jsonify({"ok": True, "dbPath": manager.db_path, "user": user})
+    except ValueError as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 400)
+    except Exception as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 500)
+
+
+@dashboard_bp.delete("/api/admin/users/<int:user_id>")
+def dashboard_admin_delete_user(user_id: int):
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    try:
+        manager.delete_user(user_id)
+        _invalidate_gateway_manager()
+        return jsonify({"ok": True, "dbPath": manager.db_path, "deletedUserId": int(user_id)})
+    except ValueError as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 400)
+    except Exception as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 500)
+
+
+@dashboard_bp.get("/api/admin/keys")
+def dashboard_admin_keys():
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    keys = manager.list_api_keys()
+    return jsonify({"ok": True, "dbPath": manager.db_path, "count": len(keys), "keys": keys})
+
+
+@dashboard_bp.post("/api/admin/keys")
+def dashboard_admin_create_key():
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return make_response(jsonify({"ok": False, "error": "invalid JSON payload"}), 400)
+    try:
+        item = manager.create_api_key(payload)
+        _invalidate_gateway_manager()
+        return jsonify({"ok": True, "dbPath": manager.db_path, "apiKey": item})
+    except ValueError as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 400)
+    except Exception as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 500)
+
+
+@dashboard_bp.post("/api/admin/keys/<int:key_id>")
+def dashboard_admin_update_key(key_id: int):
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return make_response(jsonify({"ok": False, "error": "invalid JSON payload"}), 400)
+    try:
+        item = manager.update_api_key(key_id, payload)
+        _invalidate_gateway_manager()
+        return jsonify({"ok": True, "dbPath": manager.db_path, "apiKey": item})
+    except ValueError as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 400)
+    except Exception as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 500)
+
+
+@dashboard_bp.delete("/api/admin/keys/<int:key_id>")
+def dashboard_admin_delete_key(key_id: int):
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    try:
+        manager.delete_api_key(key_id)
+        _invalidate_gateway_manager()
+        return jsonify({"ok": True, "dbPath": manager.db_path, "deletedApiKeyId": int(key_id)})
+    except ValueError as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 400)
+    except Exception as exc:
+        return make_response(jsonify({"ok": False, "error": str(exc)}), 500)
+
+
+@dashboard_bp.get("/api/admin/usage")
+def dashboard_admin_usage():
+    manager = _runtime_control_plane_manager()
+    if manager is None:
+        return make_response(jsonify({"ok": False, "error": "control plane manager unavailable"}), 400)
+    try:
+        limit = int(request.args.get("limit", "200"))
+    except Exception:
+        limit = 200
+    usage = manager.usage_summary(limit=limit)
+    return jsonify({"ok": True, "dbPath": manager.db_path, **usage})
 
 
 @dashboard_bp.get("/api/logs")

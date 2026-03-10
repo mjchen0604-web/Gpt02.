@@ -69,7 +69,7 @@ Read [the docker instrunctions here](https://github.com/RayBytes/ChatMock/blob/m
 
 ### Render
 
-This repo now includes a Render-ready Docker deployment for the official Codex app-server path:
+This repo now includes a Render-ready Docker deployment for both the official Codex app-server path and the new gateway relay mode:
 
 - [`render.yaml`](./render.yaml) defines a Docker web service with a persistent disk.
 - [`scripts/render-start.sh`](./scripts/render-start.sh) boots ChatMock first, with an in-process Codex app-server manager.
@@ -93,13 +93,27 @@ Recommended Render env:
 - `CHATMOCK_AUTO_START_CODEX_APP_SERVER=true`
 - `CHATMOCK_DASHBOARD_ALLOW_UPLOAD=true`
 
+Gateway-mode Render env:
+
+- `CHATMOCK_DATA_DIR=/app/storage`
+- `CODEX_HOME=/app/storage/.codex`
+- `CHATGPT_LOCAL_UPSTREAM=gateway`
+- `CHATGPT_LOCAL_CHANNELS_PATH=/app/storage/gateway.channels.json`
+- `CHATMOCK_CONTROL_DB_PATH=/app/storage/chatmock-control.db`
+- `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS=false`
+- one of `GATEWAY_CHANNELS_JSON`, `GATEWAY_CHANNELS_B64`, or `GATEWAY_CHANNELS_FILE`
+- `CHATMOCK_DASHBOARD_ALLOW_UPLOAD=true`
+- optionally `CHATMOCK_DASHBOARD_ADMIN_TOKEN=...`
+
 Current recommended workflow on Render:
 
 1. Deploy the service even if no `auth.json` is present yet.
 2. Open `/dashboard`.
-3. Upload one or more `auth.json` files.
-4. Uploaded credentials are written into the dashboard account pool and each one starts a managed Codex app-server fast instance.
-5. The same uploaded credentials are also preserved in the multi-account pool (`CHATGPT_LOCAL_AUTH_FILES`) for backend rotation.
+3. If you are using gateway mode, paste or save `gateway.channels.json` in the Gateway panel.
+4. Create managed users / API keys / quota rules in the Control Plane panels if you want `new-api`-style tenancy, quota, and billing summaries.
+5. Upload one or more `auth.json` files if your channels depend on `chatgpt-backend` or managed `codex-app-server` bridges.
+6. Uploaded credentials are written into the dashboard account pool and each one starts a managed Codex app-server fast instance.
+7. The same uploaded credentials are also preserved in the multi-account pool (`CHATGPT_LOCAL_AUTH_FILES`) for backend rotation.
 
 If your Git repo root is not this folder, either move `render.yaml` to the repo root or select this file path explicitly in Render when syncing the Blueprint.
 
@@ -166,13 +180,87 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ### Upstream mode
 
-- `--upstream` (choice of `chatgpt-backend`, `codex-app-server`)<br>
-ChatMock supports two upstream modes:
+- `--upstream` (choice of `chatgpt-backend`, `codex-app-server`, `gateway`)<br>
+ChatMock supports three upstream modes:
 
   - `chatgpt-backend` (default): direct bridge to the private ChatGPT/Codex backend.
   - `codex-app-server`: bridge to an official local `codex app-server` instance over WebSocket.
+  - `gateway`: channel-based relay mode driven by `CHATGPT_LOCAL_CHANNELS_PATH`.
 
 Use `codex-app-server` if you want the official Codex client protocol, including real `serviceTier:"fast"` support for GPT-5.4 fast aliases.
+
+### Gateway mode
+
+If you want ChatMock to behave more like `new-api`, start it in gateway mode and point it at a channel config file:
+
+```bash
+python chatmock.py serve --upstream gateway --channels-path ./gateway.channels.example.json
+```
+
+Gateway mode adds:
+
+- inbound API-key checks from `api_keys`
+- model/group-based channel selection
+- priority-based failover with cooldown
+- channel transports for `chatgpt-backend` and `codex-app-server`
+- `new-api`-style gateway behavior, while ChatMock remains the only proxy core that actually talks to models
+- dashboard management for the gateway config file path plus in-browser JSON editing/saving
+- dashboard channel status cards with cooldown / failure / routing visibility
+- sqlite-backed control plane for users, managed API keys, monthly token quota, and estimated billing
+- usage accounting for OpenAI / Anthropic / Ollama compatible routes, including streaming paths
+- gateway auth now defaults to deny-by-default when no API keys exist; set `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS=true` only if you intentionally want a public relay
+
+Gateway routing is wired into:
+
+- OpenAI-compatible endpoints: `/v1/models`, `/v1/completions`, `/v1/chat/completions`, `/v1/responses`
+- Anthropic-compatible endpoint: `/v1/messages`
+- Ollama-compatible endpoints: `/api/tags`, `/api/show`, `/api/chat`, `/api/generate`
+
+On Render, you can switch to gateway mode by setting:
+
+- `CHATGPT_LOCAL_UPSTREAM=gateway`
+- `CHATGPT_LOCAL_CHANNELS_PATH=/app/storage/gateway.channels.json`
+- `CHATMOCK_CONTROL_DB_PATH=/app/storage/chatmock-control.db`
+- `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS=false`
+- one of `GATEWAY_CHANNELS_JSON`, `GATEWAY_CHANNELS_B64`, or `GATEWAY_CHANNELS_FILE`
+- optionally `CHATMOCK_DASHBOARD_ADMIN_TOKEN=...`
+
+Example config: [`gateway.channels.example.json`](./gateway.channels.example.json)
+
+The example gateway config now routes the full `gpt-5.4*` family, including `gpt-5.4-fast*`, to the `codex-app-server`
+channel by default. This keeps the real fast path on the official app-server instead of letting a broad `gpt-5*`
+backend rule capture it first.
+
+Environment variable:
+
+- `CHATGPT_LOCAL_CHANNELS_PATH`
+- `CHATMOCK_CONTROL_DB_PATH`
+- `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS`
+- `CHATMOCK_DASHBOARD_ADMIN_TOKEN`
+
+### Control Plane
+
+The dashboard now includes a built-in control plane that is closer to `new-api`'s operational model, while still keeping
+ChatMock as the only real proxy core.
+
+It adds:
+
+- managed users with `active/disabled` status
+- managed API keys with groups, model filters, expiry, and enable/disable controls
+- delete/revoke operations for users and keys from the dashboard
+- monthly token quota enforcement before the upstream request is started
+- estimated billing using separate prompt / completion price-per-million settings
+- recent usage events plus per-user / per-key monthly rollups
+- optional dashboard admin-token protection for the management APIs
+
+Control-plane APIs exposed by the dashboard backend:
+
+- `GET /api/admin/users`
+- `POST /api/admin/users`
+- `GET /api/admin/keys`
+- `POST /api/admin/keys`
+- `POST /api/admin/keys/<id>`
+- `GET /api/admin/usage`
 
 - `--codex-app-server-url`<br>
 WebSocket URL for the Codex app-server upstream. The default is `ws://127.0.0.1:8787`.
@@ -281,4 +369,3 @@ When the model returns a thinking summary, the model will send back thinking tag
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=RayBytes/ChatMock&type=Timeline)](https://www.star-history.com/#RayBytes/ChatMock&Timeline)
-
