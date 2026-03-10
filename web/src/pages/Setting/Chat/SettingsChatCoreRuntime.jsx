@@ -21,7 +21,7 @@ const EMPTY_SETTINGS = {
   routingStrategy: 'round-robin',
   requestRetry: 0,
   maxRetryInterval: 5,
-  upstreamMode: 'chatgpt-backend',
+  upstreamMode: 'auto',
   codexAppServerUrl: 'ws://127.0.0.1:8787',
   serviceTier: '',
   manageCodexAppServer: true,
@@ -291,8 +291,9 @@ export default function SettingsChatCoreRuntime() {
                     {controlBlock(
                       '上游模式',
                       <Select
-                        value={settings.upstreamMode || 'chatgpt-backend'}
+                        value={settings.upstreamMode || 'auto'}
                         optionList={selectOptions([
+                          { label: 'auto（按模型家族自动分流）', value: 'auto' },
                           { label: 'chatgpt-backend', value: 'chatgpt-backend' },
                           { label: 'codex-app-server', value: 'codex-app-server' },
                         ])}
