@@ -72,8 +72,8 @@ trap shutdown EXIT INT TERM
 build_auth_files_from_env
 
 if [[ -z "${CHATGPT_LOCAL_AUTH_FILES:-}" ]]; then
-  echo "[single-service] CHATGPT_LOCAL_AUTH_FILES is empty."
-  echo "[single-service] Set CHATMOCK_AUTH_JSONS_BASE64 or CHATMOCK_AUTH_JSON_1..N."
+  echo "[single-service] No preloaded auth.json found."
+  echo "[single-service] Embedded chat will still start; upload auth.json later from the admin panel if needed."
 fi
 
 export CHATGPT_LOCAL_ROUTING_STRATEGY="${CHATGPT_LOCAL_ROUTING_STRATEGY:-round-robin}"

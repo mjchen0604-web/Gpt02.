@@ -595,6 +595,77 @@ def _now_iso8601() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def get_request_retry_limit() -> int:
+    raw = (os.getenv("CHATGPT_LOCAL_REQUEST_RETRY") or "0").strip()
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 0
+
+
+def get_max_retry_interval_seconds() -> int:
+    raw = (os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "5").strip()
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return 5
+
+
+def get_chatgpt_auth_records() -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for idx, path in enumerate(_parse_auth_files_env()):
+        label = os.path.basename(path) or f"file-{idx + 1}"
+        auth_obj = _read_json_file(path)
+        if not isinstance(auth_obj, dict):
+            records.append(
+                {
+                    "label": label,
+                    "source": path,
+                    "error": "invalid or unreadable auth.json",
+                }
+            )
+            continue
+
+        access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
+        records.append(
+            {
+                "label": label,
+                "source": path,
+                "last_status": "ready" if access_token and account_id else "missing_tokens",
+                "account_id": account_id or _derive_account_id(id_token) or "",
+                "last_refresh": last_refresh if isinstance(last_refresh, str) else "",
+                "failures": 0,
+                "cooldown_remaining": 0,
+                "has_access_token": bool(access_token),
+                "has_refresh_token": bool(refresh_token),
+                "has_id_token": bool(id_token),
+            }
+        )
+
+    if records:
+        return records
+
+    auth = read_auth_file()
+    if not isinstance(auth, dict):
+        return []
+
+    access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth)
+    return [
+        {
+            "label": "default",
+            "source": "auth.json",
+            "last_status": "ready" if access_token and account_id else "missing_tokens",
+            "account_id": account_id or _derive_account_id(id_token) or "",
+            "last_refresh": last_refresh if isinstance(last_refresh, str) else "",
+            "failures": 0,
+            "cooldown_remaining": 0,
+            "has_access_token": bool(access_token),
+            "has_refresh_token": bool(refresh_token),
+            "has_id_token": bool(id_token),
+        }
+    ]
+
+
 def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:
     candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
     if not candidates:
