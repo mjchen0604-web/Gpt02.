@@ -1,1 +1,0 @@
-../prompt_gpt5_codex.md

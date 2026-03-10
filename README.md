@@ -1,371 +1,476 @@
 <div align="center">
-  <h1>ChatMock
-  <div align="center">
-<a href="https://github.com/RayBytes/ChatMock/stargazers"><img src="https://img.shields.io/github/stars/RayBytes/ChatMock" alt="Stars Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/network/members"><img src="https://img.shields.io/github/forks/RayBytes/ChatMock" alt="Forks Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/pulls"><img src="https://img.shields.io/github/issues-pr/RayBytes/ChatMock" alt="Pull Requests Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/issues"><img src="https://img.shields.io/github/issues/RayBytes/ChatMock" alt="Issues Badge"/></a>
-<a href="https://github.com/RayBytes/ChatMock/graphs/contributors"><img alt="GitHub contributors" src="https://img.shields.io/github/contributors/RayBytes/ChatMock?color=2b9348"></a>
-<a href="https://github.com/RayBytes/ChatMock/blob/master/LICENSE"><img src="https://img.shields.io/github/license/RayBytes/ChatMock?color=2b9348" alt="License Badge"/></a>
-</div>
-  </h1>
-  
-  <p><b>OpenAI & Ollama compatible API powered by your ChatGPT plan.</b></p>
-  <p>Use your ChatGPT Plus/Pro account to call OpenAI models from code or alternate chat UIs.</p>
+
+![new-api](/web/public/logo.png)
+
+# New API
+
+🍥 **Next-Generation LLM Gateway and AI Asset Management System**
+
+<p align="center">
+  <a href="./README.zh_CN.md">简体中文</a> |
+  <a href="./README.zh_TW.md">繁體中文</a> |
+  <strong>English</strong> |
+  <a href="./README.fr.md">Français</a> |
+  <a href="./README.ja.md">日本語</a>
+</p>
+
+<p align="center">
+  <a href="https://raw.githubusercontent.com/Calcium-Ion/new-api/main/LICENSE">
+    <img src="https://img.shields.io/github/license/Calcium-Ion/new-api?color=brightgreen" alt="license">
+  </a><!--
+  --><a href="https://github.com/Calcium-Ion/new-api/releases/latest">
+    <img src="https://img.shields.io/github/v/release/Calcium-Ion/new-api?color=brightgreen&include_prereleases" alt="release">
+  </a><!--
+  --><a href="https://hub.docker.com/r/CalciumIon/new-api">
+    <img src="https://img.shields.io/badge/docker-dockerHub-blue" alt="docker">
+  </a><!--
+  --><a href="https://goreportcard.com/report/github.com/Calcium-Ion/new-api">
+    <img src="https://goreportcard.com/badge/github.com/Calcium-Ion/new-api" alt="GoReportCard">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/20180" target="_blank">
+    <img src="https://trendshift.io/api/badge/repositories/20180" alt="QuantumNous%2Fnew-api | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+  </a>
   <br>
+  <a href="https://hellogithub.com/repository/QuantumNous/new-api" target="_blank">
+    <img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=539ac4217e69431684ad4a0bab768811&claim_uid=tbFPfKIDHpc4TzR" alt="Featured｜HelloGitHub" style="width: 250px; height: 54px;" width="250" height="54" />
+  </a><!--
+  --><a href="https://www.producthunt.com/products/new-api/launches/new-api?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-new-api" target="_blank" rel="noopener noreferrer">
+    <img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1047693&theme=light&t=1769577875005" alt="New API - All-in-one AI asset management gateway. | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-key-features">Key Features</a> •
+  <a href="#-deployment">Deployment</a> •
+  <a href="#-documentation">Documentation</a> •
+  <a href="#-help-support">Help</a>
+</p>
+
 </div>
 
-## What It Does
+## 📝 Project Description
 
-ChatMock runs a local server that creates an OpenAI/Ollama compatible API, and requests are then fulfilled using your authenticated ChatGPT login with the oauth client of Codex, OpenAI's coding CLI tool. This allows you to use GPT-5, GPT-5-Codex, and other models right through your OpenAI account, without requiring an api key. You are then able to use it in other chat apps or other coding tools. <br>
-This does require a paid ChatGPT account.
+> [!IMPORTANT]
+> - This project is for personal learning purposes only, with no guarantee of stability or technical support
+> - Users must comply with OpenAI's [Terms of Use](https://openai.com/policies/terms-of-use) and **applicable laws and regulations**, and must not use it for illegal purposes
+> - According to the [《Interim Measures for the Management of Generative Artificial Intelligence Services》](http://www.cac.gov.cn/2023-07/13/c_1690898327029107.htm), please do not provide any unregistered generative AI services to the public in China.
 
-## Quickstart
+---
 
-### Mac Users
+## 🤝 Trusted Partners
 
-#### GUI Application
+<p align="center">
+  <em>No particular order</em>
+</p>
 
-If you're on **macOS**, you can download the GUI app from the [GitHub releases](https://github.com/RayBytes/ChatMock/releases).  
-> **Note:** Since ChatMock isn't signed with an Apple Developer ID, you may need to run the following command in your terminal to open the app:
->
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/ChatMock.app
-> ```
->
-> *[More info here.](https://github.com/deskflow/deskflow/wiki/Running-on-macOS)*
+<p align="center">
+  <a href="https://www.cherry-ai.com/" target="_blank">
+    <img src="./docs/images/cherry-studio.png" alt="Cherry Studio" height="80" />
+  </a><!--
+  --><a href="https://github.com/iOfficeAI/AionUi/" target="_blank">
+    <img src="./docs/images/aionui.png" alt="Aion UI" height="80" />
+  </a><!--
+  --><a href="https://bda.pku.edu.cn/" target="_blank">
+    <img src="./docs/images/pku.png" alt="Peking University" height="80" />
+  </a><!--
+  --><a href="https://www.compshare.cn/?ytag=GPU_yy_gh_newapi" target="_blank">
+    <img src="./docs/images/ucloud.png" alt="UCloud" height="80" />
+  </a><!--
+  --><a href="https://www.aliyun.com/" target="_blank">
+    <img src="./docs/images/aliyun.png" alt="Alibaba Cloud" height="80" />
+  </a><!--
+  --><a href="https://io.net/" target="_blank">
+    <img src="./docs/images/io-net.png" alt="IO.NET" height="80" />
+  </a>
+</p>
 
-#### Command Line (Homebrew)
+---
 
-You can also install ChatMock as a command-line tool using [Homebrew](https://brew.sh/):
-```
-brew tap RayBytes/chatmock
-brew install chatmock
-```
+## 🙏 Special Thanks
 
-### Python
-If you wish to just simply run this as a python flask server, you are also freely welcome too.
+<p align="center">
+  <a href="https://www.jetbrains.com/?from=new-api" target="_blank">
+    <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.png" alt="JetBrains Logo" width="120" />
+  </a>
+</p>
 
-Clone or download this repository, then cd into the project directory. Then follow the instrunctions listed below.
+<p align="center">
+  <strong>Thanks to <a href="https://www.jetbrains.com/?from=new-api">JetBrains</a> for providing free open-source development license for this project</strong>
+</p>
 
-1. Sign in with your ChatGPT account and follow the prompts
-```bash
-python chatmock.py login
-```
-You can make sure this worked by running `python chatmock.py info`
+---
 
-2. After the login completes successfully, you can just simply start the local server
+## 🚀 Quick Start
 
-```bash
-python chatmock.py serve
-```
-Then, you can simply use the address and port as the baseURL as you require (http://127.0.0.1:8000 by default)
-
-**Reminder:** When setting a baseURL in other applications, make you sure you include /v1/ at the end of the URL if you're using this as a OpenAI compatible endpoint (e.g http://127.0.0.1:8000/v1)
-
-### Docker
-
-Read [the docker instrunctions here](https://github.com/RayBytes/ChatMock/blob/main/DOCKER.md)
-
-### Render
-
-This repo now includes a Render-ready Docker deployment for both the official Codex app-server path and the new gateway relay mode:
-
-- [`render.yaml`](./render.yaml) defines a Docker web service with a persistent disk.
-- [`scripts/render-start.sh`](./scripts/render-start.sh) boots ChatMock first, with an in-process Codex app-server manager.
-
-You can still pre-seed credentials through secrets:
-
-- `CODEX_AUTH_B64` or `CODEX_AUTH_JSON` or `CODEX_AUTH_JSON_FILE`
-
-Optional runtime secret:
-
-- `CODEX_CONFIG_B64` or `CODEX_CONFIG_TOML` or `CODEX_CONFIG_TOML_FILE`
-
-Recommended Render env:
-
-- `CHATMOCK_DATA_DIR=/app/storage`
-- `CODEX_HOME=/app/storage/.codex`
-- `CHATGPT_LOCAL_UPSTREAM=codex-app-server`
-- `CHATGPT_LOCAL_CODEX_APP_SERVER_URL=ws://127.0.0.1:8787`
-- `CHATGPT_LOCAL_EXPOSE_REASONING_MODELS=true`
-- `CHATMOCK_MANAGE_CODEX_APP_SERVER=true`
-- `CHATMOCK_AUTO_START_CODEX_APP_SERVER=true`
-- `CHATMOCK_DASHBOARD_ALLOW_UPLOAD=true`
-
-Gateway-mode Render env:
-
-- `CHATMOCK_DATA_DIR=/app/storage`
-- `CODEX_HOME=/app/storage/.codex`
-- `CHATGPT_LOCAL_UPSTREAM=gateway`
-- `CHATGPT_LOCAL_CHANNELS_PATH=/app/storage/gateway.channels.json`
-- `CHATMOCK_CONTROL_DB_PATH=/app/storage/chatmock-control.db`
-- `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS=false`
-- one of `GATEWAY_CHANNELS_JSON`, `GATEWAY_CHANNELS_B64`, or `GATEWAY_CHANNELS_FILE`
-- `CHATMOCK_DASHBOARD_ALLOW_UPLOAD=true`
-- optionally `CHATMOCK_DASHBOARD_ADMIN_TOKEN=...`
-
-Current recommended workflow on Render:
-
-1. Deploy the service even if no `auth.json` is present yet.
-2. Open `/dashboard`.
-3. If you are using gateway mode, paste or save `gateway.channels.json` in the Gateway panel.
-4. Create managed users / API keys / quota rules in the Control Plane panels if you want `new-api`-style tenancy, quota, and billing summaries.
-5. Upload one or more `auth.json` files if your channels depend on `chatgpt-backend` or managed `codex-app-server` bridges.
-6. Uploaded credentials are written into the dashboard account pool and each one starts a managed Codex app-server fast instance.
-7. The same uploaded credentials are also preserved in the multi-account pool (`CHATGPT_LOCAL_AUTH_FILES`) for backend rotation.
-
-If your Git repo root is not this folder, either move `render.yaml` to the repo root or select this file path explicitly in Render when syncing the Blueprint.
-
-# Examples
-
-### Python 
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://127.0.0.1:8000/v1",
-    api_key="key"  # ignored
-)
-
-resp = client.chat.completions.create(
-    model="gpt-5",
-    messages=[{"role": "user", "content": "hello world"}]
-)
-
-print(resp.choices[0].message.content)
-```
-
-### curl
+### Using Docker Compose (Recommended)
 
 ```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H "Authorization: Bearer key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-5",
-    "messages": [{"role":"user","content":"hello world"}]
-  }'
+# Clone the project
+git clone https://github.com/QuantumNous/new-api.git
+cd new-api
+
+# Edit docker-compose.yml configuration
+nano docker-compose.yml
+
+# Start the service
+docker-compose up -d
 ```
 
-# What's supported
-
-- Tool/Function calling 
-- Vision/Image understanding
-- Thinking summaries (through thinking tags)
-- Thinking effort
-
-## Notes & Limits
-
-- Requires an active, paid ChatGPT account.
-- Some context length might be taken up by internal instructions (but they dont seem to degrade the model) 
-- Use responsibly and at your own risk. This project is not affiliated with OpenAI, and is a educational exercise.
-
-# Supported models
-- `gpt-5`
-- `gpt-5.1`
-- `gpt-5.2`
-- `gpt-5.4`
-- `gpt-5.4-fast` (ChatMock alias, requires `codex-app-server` upstream for real fast mode)
-- `gpt-5-codex`
-- `gpt-5.2-codex`
-- `gpt-5.3-codex`
-- `gpt-5.1-codex`
-- `gpt-5.1-codex-max`
-- `gpt-5.1-codex-mini`
-- `codex-mini`
-
-# Customisation / Configuration
-
-### Upstream mode
-
-- `--upstream` (choice of `chatgpt-backend`, `codex-app-server`, `gateway`)<br>
-ChatMock supports three upstream modes:
-
-  - `chatgpt-backend` (default): direct bridge to the private ChatGPT/Codex backend.
-  - `codex-app-server`: bridge to an official local `codex app-server` instance over WebSocket.
-  - `gateway`: channel-based relay mode driven by `CHATGPT_LOCAL_CHANNELS_PATH`.
-
-Use `codex-app-server` if you want the official Codex client protocol, including real `serviceTier:"fast"` support for GPT-5.4 fast aliases.
-
-### Gateway mode
-
-If you want ChatMock to behave more like `new-api`, start it in gateway mode and point it at a channel config file:
+<details>
+<summary><strong>Using Docker Commands</strong></summary>
 
 ```bash
-python chatmock.py serve --upstream gateway --channels-path ./gateway.channels.example.json
+# Pull the latest image
+docker pull calciumion/new-api:latest
+
+# Using SQLite (default)
+docker run --name new-api -d --restart always \
+  -p 3000:3000 \
+  -e TZ=Asia/Shanghai \
+  -v ./data:/data \
+  calciumion/new-api:latest
+
+# Using MySQL
+docker run --name new-api -d --restart always \
+  -p 3000:3000 \
+  -e SQL_DSN="root:123456@tcp(localhost:3306)/oneapi" \
+  -e TZ=Asia/Shanghai \
+  -v ./data:/data \
+  calciumion/new-api:latest
 ```
 
-Gateway mode adds:
+> **💡 Tip:** `-v ./data:/data` will save data in the `data` folder of the current directory, you can also change it to an absolute path like `-v /your/custom/path:/data`
 
-- inbound API-key checks from `api_keys`
-- model/group-based channel selection
-- priority-based failover with cooldown
-- channel transports for `chatgpt-backend` and `codex-app-server`
-- `new-api`-style gateway behavior, while ChatMock remains the only proxy core that actually talks to models
-- dashboard management for the gateway config file path plus in-browser JSON editing/saving
-- dashboard channel status cards with cooldown / failure / routing visibility
-- sqlite-backed control plane for users, managed API keys, monthly token quota, and estimated billing
-- usage accounting for OpenAI / Anthropic / Ollama compatible routes, including streaming paths
-- gateway auth now defaults to deny-by-default when no API keys exist; set `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS=true` only if you intentionally want a public relay
+</details>
 
-Gateway routing is wired into:
+---
 
-- OpenAI-compatible endpoints: `/v1/models`, `/v1/completions`, `/v1/chat/completions`, `/v1/responses`
-- Anthropic-compatible endpoint: `/v1/messages`
-- Ollama-compatible endpoints: `/api/tags`, `/api/show`, `/api/chat`, `/api/generate`
+🎉 After deployment is complete, visit `http://localhost:3000` to start using!
 
-On Render, you can switch to gateway mode by setting:
+📖 For more deployment methods, please refer to [Deployment Guide](https://docs.newapi.pro/en/docs/installation)
 
-- `CHATGPT_LOCAL_UPSTREAM=gateway`
-- `CHATGPT_LOCAL_CHANNELS_PATH=/app/storage/gateway.channels.json`
-- `CHATMOCK_CONTROL_DB_PATH=/app/storage/chatmock-control.db`
-- `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS=false`
-- one of `GATEWAY_CHANNELS_JSON`, `GATEWAY_CHANNELS_B64`, or `GATEWAY_CHANNELS_FILE`
-- optionally `CHATMOCK_DASHBOARD_ADMIN_TOKEN=...`
+---
 
-Example config: [`gateway.channels.example.json`](./gateway.channels.example.json)
+## 📚 Documentation
 
-The example gateway config now routes the full `gpt-5.4*` family, including `gpt-5.4-fast*`, to the `codex-app-server`
-channel by default. This keeps the real fast path on the official app-server instead of letting a broad `gpt-5*`
-backend rule capture it first.
+<div align="center">
 
-Environment variable:
+### 📖 [Official Documentation](https://docs.newapi.pro/en/docs) | [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/QuantumNous/new-api)
 
-- `CHATGPT_LOCAL_CHANNELS_PATH`
-- `CHATMOCK_CONTROL_DB_PATH`
-- `CHATMOCK_GATEWAY_ALLOW_ANONYMOUS`
-- `CHATMOCK_DASHBOARD_ADMIN_TOKEN`
+</div>
 
-### Control Plane
+**Quick Navigation:**
 
-The dashboard now includes a built-in control plane that is closer to `new-api`'s operational model, while still keeping
-ChatMock as the only real proxy core.
+| Category | Link |
+|------|------|
+| 🚀 Deployment Guide | [Installation Documentation](https://docs.newapi.pro/en/docs/installation) |
+| ⚙️ Environment Configuration | [Environment Variables](https://docs.newapi.pro/en/docs/installation/config-maintenance/environment-variables) |
+| 📡 API Documentation | [API Documentation](https://docs.newapi.pro/en/docs/api) |
+| ❓ FAQ | [FAQ](https://docs.newapi.pro/en/docs/support/faq) |
+| 💬 Community Interaction | [Communication Channels](https://docs.newapi.pro/en/docs/support/community-interaction) |
 
-It adds:
+---
 
-- managed users with `active/disabled` status
-- managed API keys with groups, model filters, expiry, and enable/disable controls
-- delete/revoke operations for users and keys from the dashboard
-- monthly token quota enforcement before the upstream request is started
-- estimated billing using separate prompt / completion price-per-million settings
-- recent usage events plus per-user / per-key monthly rollups
-- optional dashboard admin-token protection for the management APIs
+## ✨ Key Features
 
-Control-plane APIs exposed by the dashboard backend:
+> For detailed features, please refer to [Features Introduction](https://docs.newapi.pro/en/docs/guide/wiki/basic-concepts/features-introduction)
 
-- `GET /api/admin/users`
-- `POST /api/admin/users`
-- `GET /api/admin/keys`
-- `POST /api/admin/keys`
-- `POST /api/admin/keys/<id>`
-- `GET /api/admin/usage`
+### 🎨 Core Functions
 
-- `--codex-app-server-url`<br>
-WebSocket URL for the Codex app-server upstream. The default is `ws://127.0.0.1:8787`.
+| Feature | Description |
+|------|------|
+| 🎨 New UI | Modern user interface design |
+| 🌍 Multi-language | Supports Simplified Chinese, Traditional Chinese, English, French, Japanese |
+| 🔄 Data Compatibility | Fully compatible with the original One API database |
+| 📈 Data Dashboard | Visual console and statistical analysis |
+| 🔒 Permission Management | Token grouping, model restrictions, user management |
 
-### Thinking effort
+### 💰 Payment and Billing
 
-- `--reasoning-effort` (choice of minimal,low,medium,high,xhigh)<br>
-GPT-5 has a configurable amount of "effort" it can put into thinking, which may cause it to take more time for a response to return, but may overall give a smarter answer. Applying this parameter after `serve` forces the server to use this reasoning effort by default, unless overrided by the API request with a different effort set. The default reasoning effort without setting this parameter is `medium`.<br>
-    The `gpt-5.1` family (including codex) supports `low`, `medium`, and `high` while `gpt-5.1-codex-max` adds `xhigh`. The `gpt-5.2` and `gpt-5.3` families (including codex) support `low`, `medium`, `high`, and `xhigh`. 
+- ✅ Online recharge (EPay, Stripe)
+- ✅ Pay-per-use model pricing
+- ✅ Cache billing support (OpenAI, Azure, DeepSeek, Claude, Qwen and all supported models)
+- ✅ Flexible billing policy configuration
 
-### Thinking summaries
+### 🔐 Authorization and Security
 
-- `--reasoning-summary` (choice of auto,concise,detailed,none)<br>
-Models like GPT-5 do not return raw thinking content, but instead return thinking summaries. These can also be customised by you.
+- 😈 Discord authorization login
+- 🤖 LinuxDO authorization login
+- 📱 Telegram authorization login
+- 🔑 OIDC unified authentication
+- 🔍 Key quota query usage (with [neko-api-key-tool](https://github.com/Calcium-Ion/neko-api-key-tool))
 
-### OpenAI Tools
+### 🚀 Advanced Features
 
-- `--enable-web-search`<br>
-You can also access OpenAI tools through this project. Currently, only web search is available.
-You can enable it by starting the server with this parameter, which will allow OpenAI to determine when a request requires a web search, or you can use the following parameters during a request to the API to enable web search:
-<br><br>
-`responses_tools`: supports `[{"type":"web_search"}]` / `{ "type": "web_search_preview" }`<br>
-`responses_tool_choice`: `"auto"` or `"none"`
+**API Format Support:**
+- ⚡ [OpenAI Responses](https://docs.newapi.pro/en/docs/api/ai-model/chat/openai/create-response)
+- ⚡ [OpenAI Realtime API](https://docs.newapi.pro/en/docs/api/ai-model/realtime/create-realtime-session) (including Azure)
+- ⚡ [Claude Messages](https://docs.newapi.pro/en/docs/api/ai-model/chat/create-message)
+- ⚡ [Google Gemini](https://doc.newapi.pro/en/api/google-gemini-chat)
+- 🔄 [Rerank Models](https://docs.newapi.pro/en/docs/api/ai-model/rerank/create-rerank) (Cohere, Jina)
 
-### Service tier / fast mode
+**Intelligent Routing:**
+- ⚖️ Channel weighted random
+- 🔄 Automatic retry on failure
+- 🚦 User-level model rate limiting
 
-- `--service-tier`<br>
-This forwards service tier requests to the selected upstream. The exact values depend on the upstream mode:
+**Format Conversion:**
+- 🔄 **OpenAI Compatible ⇄ Claude Messages**
+- 🔄 **OpenAI Compatible → Google Gemini**
+- 🔄 **Google Gemini → OpenAI Compatible** - Text only, function calling not supported yet
+- 🚧 **OpenAI Compatible ⇄ OpenAI Responses** - In development
+- 🔄 **Thinking-to-content functionality**
 
-  - `chatgpt-backend`: use `priority` to probe the backend fast/priority path. This is best-effort only, and the backend may still downgrade the request to `default`.
-  - `codex-app-server`: use `fast` or `flex`, which map to the official Codex app-server `serviceTier` field.
+**Reasoning Effort Support:**
 
-This is separate from reasoning effort: lowering reasoning makes the model think less, while service tier asks the upstream to use a different processing mode.
+<details>
+<summary>View detailed configuration</summary>
 
-ChatMock also supports a real fast alias for model pickers:
+**OpenAI series models:**
+- `o3-mini-high` - High reasoning effort
+- `o3-mini-medium` - Medium reasoning effort
+- `o3-mini-low` - Low reasoning effort
+- `gpt-5-high` - High reasoning effort
+- `gpt-5-medium` - Medium reasoning effort
+- `gpt-5-low` - Low reasoning effort
 
-- `gpt-5.4-fast` -> upstream `gpt-5.4` + fast service tier
-- `gpt-5.4-fast-low|medium|high|xhigh` -> upstream `gpt-5.4` + fast service tier + matching `reasoning.effort`
+**Claude thinking models:**
+- `claude-3-7-sonnet-20250219-thinking` - Enable thinking mode
 
-If a request explicitly sets `service_tier`, that explicit value overrides the alias.
+**Google Gemini series models:**
+- `gemini-2.5-flash-thinking` - Enable thinking mode
+- `gemini-2.5-flash-nothinking` - Disable thinking mode
+- `gemini-2.5-pro-thinking` - Enable thinking mode
+- `gemini-2.5-pro-thinking-128` - Enable thinking mode with thinking budget of 128 tokens
+- You can also append `-low`, `-medium`, or `-high` to any Gemini model name to request the corresponding reasoning effort (no extra thinking-budget suffix needed).
 
-You can also send it per request:
+</details>
 
-```json
-{
-  "model": "gpt-5.4",
-  "service_tier": "fast",
-  "messages": [{"role":"user","content":"Say ok"}]
-}
-```
+---
 
-If the upstream accepts it, non-stream responses include a top-level `service_tier` field and ChatMock also returns:
+## 🤖 Model Support
 
-- `X-ChatMock-Service-Tier-Requested`
-- `X-ChatMock-Service-Tier-Observed` (when the upstream reports one)
+> For details, please refer to [API Documentation - Relay Interface](https://docs.newapi.pro/en/docs/api)
 
-### Local true-fast validation
+| Model Type | Description | Documentation |
+|---------|------|------|
+| 🤖 OpenAI-Compatible | OpenAI compatible models | [Documentation](https://docs.newapi.pro/en/docs/api/ai-model/chat/openai/createchatcompletion) |
+| 🤖 OpenAI Responses | OpenAI Responses format | [Documentation](https://docs.newapi.pro/en/docs/api/ai-model/chat/openai/createresponse) |
+| 🎨 Midjourney-Proxy | [Midjourney-Proxy(Plus)](https://github.com/novicezk/midjourney-proxy) | [Documentation](https://doc.newapi.pro/api/midjourney-proxy-image) |
+| 🎵 Suno-API | [Suno API](https://github.com/Suno-API/Suno-API) | [Documentation](https://doc.newapi.pro/api/suno-music) |
+| 🔄 Rerank | Cohere, Jina | [Documentation](https://docs.newapi.pro/en/docs/api/ai-model/rerank/creatererank) |
+| 💬 Claude | Messages format | [Documentation](https://docs.newapi.pro/en/docs/api/ai-model/chat/createmessage) |
+| 🌐 Gemini | Google Gemini format | [Documentation](https://docs.newapi.pro/en/docs/api/ai-model/chat/gemini/geminirelayv1beta) |
+| 🔧 Dify | ChatFlow mode | - |
+| 🎯 Custom | Supports complete call address | - |
 
-To validate real GPT-5.4 fast mode locally, run the official Codex app-server and then point ChatMock at it:
+### 📡 Supported Interfaces
 
-1. Start the Codex app-server:
+<details>
+<summary>View complete interface list</summary>
+
+- [Chat Interface (Chat Completions)](https://docs.newapi.pro/en/docs/api/ai-model/chat/openai/createchatcompletion)
+- [Response Interface (Responses)](https://docs.newapi.pro/en/docs/api/ai-model/chat/openai/createresponse)
+- [Image Interface (Image)](https://docs.newapi.pro/en/docs/api/ai-model/images/openai/post-v1-images-generations)
+- [Audio Interface (Audio)](https://docs.newapi.pro/en/docs/api/ai-model/audio/openai/create-transcription)
+- [Video Interface (Video)](https://docs.newapi.pro/en/docs/api/ai-model/audio/openai/createspeech)
+- [Embedding Interface (Embeddings)](https://docs.newapi.pro/en/docs/api/ai-model/embeddings/createembedding)
+- [Rerank Interface (Rerank)](https://docs.newapi.pro/en/docs/api/ai-model/rerank/creatererank)
+- [Realtime Conversation (Realtime)](https://docs.newapi.pro/en/docs/api/ai-model/realtime/createrealtimesession)
+- [Claude Chat](https://docs.newapi.pro/en/docs/api/ai-model/chat/createmessage)
+- [Google Gemini Chat](https://docs.newapi.pro/en/docs/api/ai-model/chat/gemini/geminirelayv1beta)
+
+</details>
+
+---
+
+## 🚢 Deployment
+
+> [!TIP]
+> **Latest Docker image:** `calciumion/new-api:latest`
+
+### 📋 Deployment Requirements
+
+| Component | Requirement |
+|------|------|
+| **Local database** | SQLite (Docker must mount `/data` directory)|
+| **Remote database** | MySQL ≥ 5.7.8 or PostgreSQL ≥ 9.6 |
+| **Container engine** | Docker / Docker Compose |
+
+### ⚙️ Environment Variable Configuration
+
+<details>
+<summary>Common environment variable configuration</summary>
+
+| Variable Name | Description | Default Value |
+|--------|------|--------|
+| `SESSION_SECRET` | Session secret (required for multi-machine deployment) | - |
+| `CRYPTO_SECRET` | Encryption secret (required for Redis) | - |
+| `SQL_DSN` | Database connection string | - |
+| `REDIS_CONN_STRING` | Redis connection string | - |
+| `STREAMING_TIMEOUT` | Streaming timeout (seconds) | `300` |
+| `STREAM_SCANNER_MAX_BUFFER_MB` | Max per-line buffer (MB) for the stream scanner; increase when upstream sends huge image/base64 payloads | `64` |
+| `MAX_REQUEST_BODY_MB` | Max request body size (MB, counted **after decompression**; prevents huge requests/zip bombs from exhausting memory). Exceeding it returns `413` | `32` |
+| `AZURE_DEFAULT_API_VERSION` | Azure API version | `2025-04-01-preview` |
+| `ERROR_LOG_ENABLED` | Error log switch | `false` |
+| `PYROSCOPE_URL` | Pyroscope server address | - |
+| `PYROSCOPE_APP_NAME` | Pyroscope application name | `new-api` |
+| `PYROSCOPE_BASIC_AUTH_USER` | Pyroscope basic auth user | - |
+| `PYROSCOPE_BASIC_AUTH_PASSWORD` | Pyroscope basic auth password | - |
+| `PYROSCOPE_MUTEX_RATE` | Pyroscope mutex sampling rate | `5` |
+| `PYROSCOPE_BLOCK_RATE` | Pyroscope block sampling rate | `5` |
+| `HOSTNAME` | Hostname tag for Pyroscope | `new-api` |
+
+📖 **Complete configuration:** [Environment Variables Documentation](https://docs.newapi.pro/en/docs/installation/config-maintenance/environment-variables)
+
+</details>
+
+### 🔧 Deployment Methods
+
+<details>
+<summary><strong>Method 1: Docker Compose (Recommended)</strong></summary>
+
 ```bash
-codex app-server --listen ws://127.0.0.1:8787 --enable fast_mode
+# Clone the project
+git clone https://github.com/QuantumNous/new-api.git
+cd new-api
+
+# Edit configuration
+nano docker-compose.yml
+
+# Start service
+docker-compose up -d
 ```
 
-2. Start ChatMock against that upstream:
+</details>
+
+<details>
+<summary><strong>Method 2: Docker Commands</strong></summary>
+
+**Using SQLite:**
 ```bash
-python chatmock.py serve --upstream codex-app-server --codex-app-server-url ws://127.0.0.1:8787 --expose-reasoning-models
+docker run --name new-api -d --restart always \
+  -p 3000:3000 \
+  -e TZ=Asia/Shanghai \
+  -v ./data:/data \
+  calciumion/new-api:latest
 ```
 
-3. Send a test request with `gpt-5.4-fast-low` (or another `gpt-5.4-fast-*` alias). A successful non-stream response should include:
-
-```json
-{
-  "model": "gpt-5.4-fast-low",
-  "service_tier": "fast"
-}
+**Using MySQL:**
+```bash
+docker run --name new-api -d --restart always \
+  -p 3000:3000 \
+  -e SQL_DSN="root:123456@tcp(localhost:3306)/oneapi" \
+  -e TZ=Asia/Shanghai \
+  -v ./data:/data \
+  calciumion/new-api:latest
 ```
 
-Current behavior: the `codex-app-server` adapter is validated for standard text chat, streaming, OpenAI-style function calling (`tool_calls` + follow-up `tool` messages), native image inputs on the latest user turn, and native Codex `web_search` passthrough. Anthropic-compatible `/v1/messages` is also available on top of the same upstream. Legacy multi-account rotation is still available for the `chatgpt-backend` upstream path and through the dashboard account pool.
+> **💡 Path explanation:**
+> - `./data:/data` - Relative path, data saved in the data folder of the current directory
+> - You can also use absolute path, e.g.: `/your/custom/path:/data`
 
-#### Example usage
-```json
-{
-  "model": "gpt-5",
-  "messages": [{"role":"user","content":"Find current METAR rules"}],
-  "stream": true,
-  "responses_tools": [{"type": "web_search"}],
-  "responses_tool_choice": "auto"
-}
-```
+</details>
 
-### Expose reasoning models
+<details>
+<summary><strong>Method 3: BaoTa Panel</strong></summary>
 
-- `--expose-reasoning-models`<br>
-If your preferred app doesn’t support selecting reasoning effort, or you just want a simpler approach, this parameter exposes each reasoning level as a separate, queryable model. Each reasoning level also appears individually under ⁠/v1/models, so model pickers in your favorite chat apps will list all reasoning options as distinct models you can switch between.
+1. Install BaoTa Panel (≥ 9.2.0 version)
+2. Search for **New-API** in the application store
+3. One-click installation
 
-## Notes
-If you want the official fast path locally, use `--upstream codex-app-server` and a `gpt-5.4-fast-*` alias (or `service_tier=fast`). If you only want less thinking overhead, lower `--reasoning-effort` separately. <br>
-All parameters and choices can be seen by sending `python chatmock.py serve --h`<br>
-The context size of this route is also larger than what you get access to in the regular ChatGPT app.<br>
+📖 [Tutorial with images](./docs/BT.md)
 
-When the model returns a thinking summary, the model will send back thinking tags to make it compatible with chat apps. **If you don't like this behavior, you can instead set `--reasoning-compat` to legacy, and reasoning will be set in the reasoning tag instead of being returned in the actual response text.**
+</details>
 
+### ⚠️ Multi-machine Deployment Considerations
 
-## Star History
+> [!WARNING]
+> - **Must set** `SESSION_SECRET` - Otherwise login status inconsistent
+> - **Shared Redis must set** `CRYPTO_SECRET` - Otherwise data cannot be decrypted
 
-[![Star History Chart](https://api.star-history.com/svg?repos=RayBytes/ChatMock&type=Timeline)](https://www.star-history.com/#RayBytes/ChatMock&Timeline)
+### 🔄 Channel Retry and Cache
+
+**Retry configuration:** `Settings → Operation Settings → General Settings → Failure Retry Count`
+
+**Cache configuration:**
+- `REDIS_CONN_STRING`: Redis cache (recommended)
+- `MEMORY_CACHE_ENABLED`: Memory cache
+
+---
+
+## 🔗 Related Projects
+
+### Upstream Projects
+
+| Project | Description |
+|------|------|
+| [One API](https://github.com/songquanpeng/one-api) | Original project base |
+| [Midjourney-Proxy](https://github.com/novicezk/midjourney-proxy) | Midjourney interface support |
+
+### Supporting Tools
+
+| Project | Description |
+|------|------|
+| [neko-api-key-tool](https://github.com/Calcium-Ion/neko-api-key-tool) | Key quota query tool |
+| [new-api-horizon](https://github.com/Calcium-Ion/new-api-horizon) | New API high-performance optimized version |
+
+---
+
+## 💬 Help Support
+
+### 📖 Documentation Resources
+
+| Resource | Link |
+|------|------|
+| 📘 FAQ | [FAQ](https://docs.newapi.pro/en/docs/support/faq) |
+| 💬 Community Interaction | [Communication Channels](https://docs.newapi.pro/en/docs/support/community-interaction) |
+| 🐛 Issue Feedback | [Issue Feedback](https://docs.newapi.pro/en/docs/support/feedback-issues) |
+| 📚 Complete Documentation | [Official Documentation](https://docs.newapi.pro/en/docs) |
+
+### 🤝 Contribution Guide
+
+Welcome all forms of contribution!
+
+- 🐛 Report Bugs
+- 💡 Propose New Features
+- 📝 Improve Documentation
+- 🔧 Submit Code
+
+---
+
+## 📜 License
+
+This project is licensed under the [GNU Affero General Public License v3.0 (AGPLv3)](./LICENSE).
+
+This is an open-source project developed based on [One API](https://github.com/songquanpeng/one-api) (MIT License).
+
+If your organization's policies do not permit the use of AGPLv3-licensed software, or if you wish to avoid the open-source obligations of AGPLv3, please contact us at: [support@quantumnous.com](mailto:support@quantumnous.com)
+
+---
+
+## 🌟 Star History
+
+<div align="center">
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Calcium-Ion/new-api&type=Date)](https://star-history.com/#Calcium-Ion/new-api&Date)
+
+</div>
+
+---
+
+<div align="center">
+
+### 💖 Thank you for using New API
+
+If this project is helpful to you, welcome to give us a ⭐️ Star！
+
+**[Official Documentation](https://docs.newapi.pro/en/docs)** • **[Issue Feedback](https://github.com/Calcium-Ion/new-api/issues)** • **[Latest Release](https://github.com/Calcium-Ion/new-api/releases)**
+
+<sub>Built with ❤️ by QuantumNous</sub>
+
+</div>

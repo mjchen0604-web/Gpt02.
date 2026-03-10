@@ -1,28 +1,38 @@
-FROM node:20-bookworm-slim AS node
+FROM oven/bun:latest AS builder
 
-FROM python:3.13-slim-bookworm
+WORKDIR /build
+COPY web/package.json .
+COPY web/bun.lock .
+RUN bun install
+COPY ./web .
+COPY ./VERSION .
+RUN DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat VERSION) bun run build
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+FROM golang:alpine AS builder2
+ENV GO111MODULE=on CGO_ENABLED=0
 
-WORKDIR /app
+ARG TARGETOS
+ARG TARGETARCH
+ENV GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64}
+ENV GOEXPERIMENT=greenteagc
 
-COPY --from=node /usr/local/ /usr/local/
+WORKDIR /build
 
-RUN npm install -g @openai/codex
+ADD go.mod go.sum ./
+RUN go mod download
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+COPY --from=builder /build/dist ./web/dist
+RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)'" -o new-api
 
-COPY . /app
+FROM debian:bookworm-slim
 
-RUN mkdir -p /data /app/storage
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata libasan8 wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
 
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /app/scripts/render-start.sh
-
-EXPOSE 8000 1455
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["serve"]
-
+COPY --from=builder2 /build/new-api /
+EXPOSE 3000
+WORKDIR /data
+ENTRYPOINT ["/new-api"]

@@ -1,28 +1,31 @@
-# Python bytecode
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environments
-.env/
+.idea
+.vscode
+.zed
+.history
+upload
+*.exe
+*.db
+build
+*.db-journal
+logs
+web/dist
 .env
-.venv/
-venv/
-
-# Local auth/account data
-acc*/
-chatmock-accounts/
-auth.json
-
-# Packaging artifacts
-build/
-dist/
-*.egg-info/
-
-# Tool caches
-.pytest_cache/
-.mypy_cache/
-
-# OS clutter
+one-api
+new-api
+/__debug_bin*
 .DS_Store
-*.swp
+tiktoken_cache
+.eslintcache
+.gocache
+.gomodcache/
+.cache
+web/bun.lock
+plans
+.claude
+
+electron/node_modules
+electron/dist
+data/
+.gomodcache/
+.gocache-temp
+.gopath
