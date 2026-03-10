@@ -73,6 +73,18 @@ let savingSettings = false;
 let adminUsersCache = [];
 let adminKeysCache = [];
 let dashboardAuthRequired = false;
+const sidebarLinks = Array.from(document.querySelectorAll(".sidebar-link"));
+
+const BACKEND_MESSAGE_MAP = {
+  "dashboard admin token required": "后台管理员口令必填",
+  "dashboard admin token invalid": "后台管理员口令无效",
+  "Missing gateway API key": "缺少网关 API Key",
+  "invalid gateway api key": "网关 API Key 无效",
+  "anonymous gateway access disabled": "已禁用匿名网关访问",
+  "No gateway channels available": "当前没有可用渠道",
+  "Missing ChatGPT credentials": "缺少 ChatGPT 凭据",
+  "Gateway config validation failed": "渠道配置校验失败",
+};
 
 function getDashboardToken() {
   try {
@@ -102,6 +114,13 @@ function updateDashboardAuthHint(text, isError = false) {
   nodes.dashboardAuthHint.style.color = isError ? "#ffb5b5" : "";
 }
 
+function localizeMessage(message) {
+  if (typeof message !== "string") {
+    return message;
+  }
+  return BACKEND_MESSAGE_MAP[message] || message;
+}
+
 async function api(path, options = {}) {
   const dashboardToken = getDashboardToken();
   const response = await fetch(path, {
@@ -119,13 +138,16 @@ async function api(path, options = {}) {
     payload = {};
   }
   if (!response.ok) {
-    const detailText = Array.isArray(payload.details) && payload.details.length ? `\n${payload.details.join("\n")}` : "";
+    const localizedDetails =
+      Array.isArray(payload.details) && payload.details.length ? payload.details.map((detail) => localizeMessage(detail)) : [];
+    const detailText = localizedDetails.length ? `\n${localizedDetails.join("\n")}` : "";
+    const rawErrorMessage =
+      (typeof payload.error === "string" ? payload.error : payload?.error?.message) || payload.message || "";
     const errorMessage =
-      (typeof payload.error === "string" ? payload.error : payload?.error?.message) ||
-      payload.message ||
+      localizeMessage(rawErrorMessage) ||
       `${response.status} ${response.statusText}`;
     if (response.status === 401 && dashboardAuthRequired) {
-      updateDashboardAuthHint("dashboard auth: token missing or invalid", true);
+      updateDashboardAuthHint("后台鉴权：口令缺失或无效", true);
     }
     const message = `${errorMessage}${detailText}`;
     throw new Error(message);
@@ -157,7 +179,116 @@ function formatInteger(value) {
 }
 
 function formatMoney(value) {
-  return `$${Number(value || 0).toFixed(6)}`;
+  return `US$${Number(value || 0).toFixed(6)}`;
+}
+
+function formatQuota(value) {
+  return Number(value || 0) > 0 ? formatInteger(value) : "不限";
+}
+
+function formatDashboardAuthState(required, hasToken) {
+  if (!required) {
+    return "后台鉴权：已关闭";
+  }
+  return hasToken ? "后台鉴权：已载入口令" : "后台鉴权：需要管理员口令";
+}
+
+function formatServiceState(value) {
+  const state = String(value || "").toLowerCase();
+  if (!state) {
+    return "未知";
+  }
+  const stateMap = {
+    running: "运行中",
+    started: "运行中",
+    active: "运行中",
+    awaiting_auth: "等待凭据",
+    external: "外部模式",
+    starting: "启动中",
+    error: "异常",
+    disabled: "已停用",
+    stopped: "已停止",
+    unknown: "未知",
+  };
+  return stateMap[state] || value;
+}
+
+function formatBooleanState(value, trueLabel = "是", falseLabel = "否") {
+  return value ? trueLabel : falseLabel;
+}
+
+function formatStatusLabel(value) {
+  const status = String(value || "").toLowerCase();
+  if (status === "active" || status === "enabled") {
+    return "启用";
+  }
+  if (status === "disabled") {
+    return "停用";
+  }
+  if (status === "ready") {
+    return "就绪";
+  }
+  if (status === "cooldown") {
+    return "冷却中";
+  }
+  return value || "-";
+}
+
+function formatActionLabel(action) {
+  const actionMap = {
+    restart: "重启",
+    start: "启动",
+    stop: "停止",
+  };
+  return actionMap[action] || action;
+}
+
+function bindSidebarNav() {
+  if (!sidebarLinks.length) {
+    return;
+  }
+  const targets = sidebarLinks
+    .map((link) => {
+      const href = link.getAttribute("href");
+      if (!href || !href.startsWith("#")) {
+        return null;
+      }
+      const section = document.querySelector(href);
+      return section ? { link, section, href } : null;
+    })
+    .filter(Boolean);
+
+  const activate = (href) => {
+    sidebarLinks.forEach((link) => link.classList.toggle("active", link.getAttribute("href") === href));
+  };
+
+  targets.forEach(({ link, href }) => {
+    link.addEventListener("click", () => activate(href));
+  });
+
+  if (!("IntersectionObserver" in window) || !targets.length) {
+    activate(targets[0]?.href || "#overview");
+    return;
+  }
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      const activeEntry = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (!activeEntry) {
+        return;
+      }
+      activate(`#${activeEntry.target.id}`);
+    },
+    {
+      rootMargin: "-30% 0px -48% 0px",
+      threshold: [0.2, 0.4, 0.6],
+    }
+  );
+
+  targets.forEach(({ section }) => observer.observe(section));
+  activate(targets[0].href);
 }
 
 function parseCsvList(value, fallback = []) {
@@ -177,14 +308,7 @@ async function loadDashboardAuthStatus() {
   if (nodes.dashboardToken) {
     nodes.dashboardToken.value = getDashboardToken();
   }
-  if (dashboardAuthRequired) {
-    updateDashboardAuthHint(
-      getDashboardToken() ? "dashboard auth: token loaded" : "dashboard auth: token required",
-      !getDashboardToken()
-    );
-  } else {
-    updateDashboardAuthHint("dashboard auth: disabled");
-  }
+  updateDashboardAuthHint(formatDashboardAuthState(dashboardAuthRequired, Boolean(getDashboardToken())), dashboardAuthRequired && !getDashboardToken());
 }
 
 function classifyServiceChip(health) {
@@ -193,53 +317,51 @@ function classifyServiceChip(health) {
   const hasModels = Number(health?.models?.count || 0) > 0;
   const serviceReady = ["started", "running", "active"].includes(serviceState);
   if (serviceReady && listening && hasModels) {
-    return { text: "ONLINE", className: "status-chip ok" };
+    return { text: "运行中", className: "status-chip ok" };
   }
   if (serviceState === "awaiting_auth") {
-    return { text: "AUTH", className: "status-chip warn" };
+    return { text: "待凭据", className: "status-chip warn" };
   }
   if (serviceState === "external") {
-    return { text: "EXTERNAL", className: "status-chip warn" };
+    return { text: "外部模式", className: "status-chip warn" };
   }
   if (serviceState === "starting") {
-    return { text: "STARTING", className: "status-chip warn" };
+    return { text: "启动中", className: "status-chip warn" };
   }
   if (serviceState === "error") {
-    return { text: "ERROR", className: "status-chip bad" };
+    return { text: "异常", className: "status-chip bad" };
   }
   if (serviceReady) {
-    return { text: "DEGRADED", className: "status-chip warn" };
+    return { text: "降级", className: "status-chip warn" };
   }
-  return { text: "OFFLINE", className: "status-chip bad" };
+  return { text: "离线", className: "status-chip bad" };
 }
 
 function renderHealth(health) {
   const serviceState = health?.service?.status || "unknown";
-  const listening = health?.listening ? "YES" : "NO";
+  const listening = health?.listening ? "已监听" : "未监听";
   const modelCount = Number(health?.models?.count || 0);
   const authCount = Number(health?.accounts?.count || 0);
   const checkedAt = health?.now ? new Date(health.now).toLocaleString() : "-";
-  nodes.metricService.textContent = serviceState;
+  nodes.metricService.textContent = formatServiceState(serviceState);
   nodes.metricPort.textContent = listening;
   nodes.metricModels.textContent = String(modelCount);
   nodes.metricAuths.textContent = String(authCount);
   let detail = "";
   if (serviceState === "awaiting_auth") {
-    detail = "waiting for uploaded auth";
+    detail = "等待上传账号凭据";
   } else if (serviceState === "external") {
-    detail = "using external codex app-server";
+    detail = "当前使用外部 Codex App Server";
   } else if (serviceState === "starting") {
-    detail = "starting codex app-server";
+    detail = "正在启动 Codex App Server";
   } else if (serviceState === "running" && health?.service?.url) {
     detail = String(health.service.url);
   }
   if (health?.gateway?.enabled) {
-    const gatewayText = `gateway ${Number(health.gateway.channels || 0)}ch / ${Number(health.gateway.apiKeys || 0)}keys`;
+    const gatewayText = `网关 ${Number(health.gateway.channels || 0)} 个渠道 / ${Number(health.gateway.apiKeys || 0)} 把密钥`;
     detail = detail ? `${detail} · ${gatewayText}` : gatewayText;
   }
-  nodes.healthHint.textContent = detail
-    ? `status checked: ${checkedAt} · ${detail}`
-    : `status checked: ${checkedAt}`;
+  nodes.healthHint.textContent = detail ? `最近检查：${checkedAt} · ${detail}` : `最近检查：${checkedAt}`;
   const chip = classifyServiceChip(health);
   nodes.serviceChip.textContent = chip.text;
   nodes.serviceChip.className = chip.className;
@@ -247,13 +369,13 @@ function renderHealth(health) {
 
 function tokenPill(label, ok) {
   const cls = ok ? "token-pill ok" : "token-pill no";
-  return `<span class="${cls}">${label}:${ok ? "Y" : "N"}</span>`;
+  return `<span class="${cls}">${label}：${ok ? "有" : "无"}</span>`;
 }
 
 function renderAccounts(payload) {
   const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
   if (!accounts.length) {
-    nodes.accounts.innerHTML = `<div class="account-card">No accounts uploaded</div>`;
+    nodes.accounts.innerHTML = `<div class="account-card">暂未上传账号凭据</div>`;
     return;
   }
   nodes.accounts.innerHTML = accounts
@@ -263,8 +385,8 @@ function renderAccounts(payload) {
           <article class="account-card">
             <div class="account-top">
               <div>
-                <div class="account-file">${acc.label || "unknown"}</div>
-                <div class="account-mail">Failed to read account</div>
+                <div class="account-file">${acc.label || "未知文件"}</div>
+                <div class="account-mail">账号读取失败</div>
               </div>
             </div>
             <div class="account-meta"><div>${acc.error}</div></div>
@@ -278,19 +400,19 @@ function renderAccounts(payload) {
               <div class="account-file">${acc.label || "-"}</div>
               <div class="account-mail">${acc.source || "-"}</div>
             </div>
-            <div class="account-file">status: ${acc.last_status ?? "-"}</div>
+            <div class="account-file">状态：${localizeMessage(acc.last_status ?? "-")}</div>
           </div>
           <div class="account-meta">
-            <div>account: ${acc.account_id || "-"}</div>
-            <div>refresh: ${acc.last_refresh || "-"}</div>
-            <div>failures: ${acc.failures || 0}</div>
-            <div>cooldown: ${acc.cooldown_remaining || 0}s</div>
-            <div>fast: ${acc.fast_status || "-"} ${acc.fast_port ? `@${acc.fast_port}` : ""}</div>
-            <div>fast requests: ${acc.fast_request_successes || 0}/${acc.fast_request_count || 0}</div>
+            <div>账号 ID：${acc.account_id || "-"}</div>
+            <div>最近刷新：${acc.last_refresh || "-"}</div>
+            <div>失败次数：${acc.failures || 0}</div>
+            <div>冷却剩余：${acc.cooldown_remaining || 0}s</div>
+            <div>Fast 状态：${acc.fast_status || "-"} ${acc.fast_port ? `@${acc.fast_port}` : ""}</div>
+            <div>Fast 请求：${acc.fast_request_successes || 0}/${acc.fast_request_count || 0}</div>
           </div>
-          ${tokenPill("access", Boolean(acc.has_access_token))}
-          ${tokenPill("refresh", Boolean(acc.has_refresh_token))}
-          ${tokenPill("id", Boolean(acc.has_id_token))}
+          ${tokenPill("访问令牌", Boolean(acc.has_access_token))}
+          ${tokenPill("刷新令牌", Boolean(acc.has_refresh_token))}
+          ${tokenPill("身份令牌", Boolean(acc.has_id_token))}
         </article>
       `;
     })
@@ -300,19 +422,19 @@ function renderAccounts(payload) {
 function renderModels(payload) {
   const ids = Array.isArray(payload?.ids) ? payload.ids : [];
   if (!ids.length) {
-    nodes.models.innerHTML = `<span class="model-chip">No model data</span>`;
+    nodes.models.innerHTML = `<span class="model-chip">暂无模型数据</span>`;
     return;
   }
   nodes.models.innerHTML = ids.map((id) => `<span class="model-chip">${id}</span>`).join("");
 }
 
 function renderConfig(payload) {
-  nodes.localConfig.textContent = payload?.localConfig || "Failed to read";
-  nodes.activeConfig.textContent = payload?.activeConfig || "Failed to read";
+  nodes.localConfig.textContent = payload?.localConfig || "读取失败";
+  nodes.activeConfig.textContent = payload?.activeConfig || "读取失败";
 }
 
 function renderLogs(payload) {
-  nodes.logs.textContent = payload?.text || "Failed to read";
+  nodes.logs.textContent = payload?.text || "读取失败";
 }
 
 function readSettingsForm() {
@@ -389,7 +511,7 @@ function applySettingsForm(settings = {}) {
 
 function renderGatewayConfig(payload = {}) {
   const summary = payload?.summary || {};
-  const existsText = payload?.exists ? "file exists" : "file will be created on save";
+  const existsText = payload?.exists ? "配置文件已存在" : "保存时将创建配置文件";
   const channels = Array.isArray(summary?.channels) ? summary.channels.length : 0;
   const apiKeys = Array.isArray(summary?.api_keys) ? summary.api_keys.length : 0;
   const validationErrors = Array.isArray(payload?.validationErrors) ? payload.validationErrors : [];
@@ -400,11 +522,11 @@ function renderGatewayConfig(payload = {}) {
     nodes.gatewayConfig.value = payload?.config || '{\n  "api_keys": [],\n  "channels": []\n}';
   }
   if (nodes.gatewaySummary) {
-    const validationText = validationErrors.length ? ` · invalid=${validationErrors.length}` : " · config valid";
-    nodes.gatewaySummary.textContent = `${existsText} · channels=${channels} · api_keys=${apiKeys}${validationText}`;
+    const validationText = validationErrors.length ? ` · 校验错误 ${validationErrors.length} 条` : " · 配置校验通过";
+    nodes.gatewaySummary.textContent = `${existsText} · 渠道 ${channels} 个 · 密钥 ${apiKeys} 把${validationText}`;
   }
   if (validationErrors.length) {
-    setOutput(`[gateway config validation]\\n${validationErrors.join("\\n")}`);
+    setOutput(`[渠道配置校验]\n${validationErrors.map((detail) => localizeMessage(detail)).join("\n")}`);
   }
 }
 
@@ -414,7 +536,7 @@ function renderGatewayStatus(payload = {}) {
     return;
   }
   if (!channels.length) {
-    nodes.gatewayStatusGrid.innerHTML = `<div class="gateway-card">No gateway channels loaded</div>`;
+    nodes.gatewayStatusGrid.innerHTML = `<div class="gateway-card">当前还没有加载任何网关渠道</div>`;
     return;
   }
   nodes.gatewayStatusGrid.innerHTML = channels
@@ -422,11 +544,11 @@ function renderGatewayStatus(payload = {}) {
       const healthy = Boolean(channel?.healthy) && Boolean(channel?.enabled);
       const disabled = !Boolean(channel?.enabled);
       const cardClass = disabled ? "gateway-card warn" : healthy ? "gateway-card" : "gateway-card bad";
-      const stateText = disabled ? "DISABLED" : healthy ? "READY" : "COOLDOWN";
+      const stateText = disabled ? "已停用" : healthy ? "就绪" : "冷却中";
       const groups = Array.isArray(channel?.groups) ? channel.groups.join(", ") : "-";
       const models = Array.isArray(channel?.models) ? channel.models.join(", ") : "-";
       const families = Array.isArray(channel?.routeFamilies) ? channel.routeFamilies.join(", ") : "-";
-      const lastError = channel?.lastError ? `<div class="gateway-card-error">${channel.lastError}</div>` : "";
+      const lastError = channel?.lastError ? `<div class="gateway-card-error">${localizeMessage(channel.lastError)}</div>` : "";
       return `
         <article class="${cardClass}">
           <div class="gateway-card-head">
@@ -437,16 +559,16 @@ function renderGatewayStatus(payload = {}) {
             <span class="status-chip ${healthy ? "ok" : disabled ? "warn" : "bad"}">${stateText}</span>
           </div>
           <div class="gateway-card-meta">
-            <div>priority: ${channel?.priority ?? 0}</div>
-            <div>weight: ${channel?.weight ?? 1}</div>
-            <div>groups: ${groups || "-"}</div>
-            <div>families: ${families || "-"}</div>
-            <div>cooldown: ${channel?.cooldownRemaining ?? 0}s</div>
-            <div>failures: ${channel?.failures ?? 0}</div>
-            <div>last status: ${channel?.lastStatus ?? "-"}</div>
-            <div>auth: ${channel?.authLabel || "-"}</div>
-            <div>models: ${models || "-"}</div>
-            <div>timeout: ${channel?.timeoutSeconds ?? 600}s</div>
+            <div>优先级：${channel?.priority ?? 0}</div>
+            <div>权重：${channel?.weight ?? 1}</div>
+            <div>分组：${groups || "-"}</div>
+            <div>路由族：${families || "-"}</div>
+            <div>冷却剩余：${channel?.cooldownRemaining ?? 0}s</div>
+            <div>失败次数：${channel?.failures ?? 0}</div>
+            <div>上次状态：${channel?.lastStatus ?? "-"}</div>
+            <div>认证源：${channel?.authLabel || "-"}</div>
+            <div>模型：${models || "-"}</div>
+            <div>超时：${channel?.timeoutSeconds ?? 600}s</div>
           </div>
           ${lastError}
         </article>
@@ -461,7 +583,7 @@ function syncKeyUserOptions() {
   }
   const currentValue = String(nodes.adminKeyUserId.value || "");
   if (!adminUsersCache.length) {
-    nodes.adminKeyUserId.innerHTML = `<option value="">No users</option>`;
+    nodes.adminKeyUserId.innerHTML = `<option value="">暂无用户</option>`;
     return;
   }
   nodes.adminKeyUserId.innerHTML = adminUsersCache
@@ -522,7 +644,7 @@ function renderAdminUsers(payload = {}) {
     return;
   }
   if (!users.length) {
-    nodes.adminUsers.innerHTML = `<div class="admin-card">No managed users</div>`;
+    nodes.adminUsers.innerHTML = `<div class="admin-card">暂未创建托管用户</div>`;
     return;
   }
   nodes.adminUsers.innerHTML = users
@@ -532,21 +654,21 @@ function renderAdminUsers(payload = {}) {
           <div class="admin-card-head">
             <div>
               <div class="admin-card-title">#${user.id} ${user.name}</div>
-              <div class="admin-card-subtle">${user.email || "no email"} · ${user.status}</div>
+              <div class="admin-card-subtle">${user.email || "未填写邮箱"} · ${formatStatusLabel(user.status)}</div>
             </div>
-            <span class="status-chip ${user.status === "active" ? "ok" : "warn"}">${String(user.status || "").toUpperCase()}</span>
+            <span class="status-chip ${user.status === "active" ? "ok" : "warn"}">${formatStatusLabel(user.status)}</span>
           </div>
           <div class="admin-card-meta">
-            <div>quota: ${formatInteger(user.monthlyQuotaTokens)}</div>
-            <div>keys: ${formatInteger(user.keyCount)}</div>
-            <div>used this month: ${formatInteger(user.usedTokensMonth)}</div>
-            <div>cost this month: ${formatMoney(user.estimatedCostMonth)}</div>
-            <div>prompt / 1M: ${formatMoney(user.promptPricePerMillion)}</div>
-            <div>completion / 1M: ${formatMoney(user.completionPricePerMillion)}</div>
+            <div>月额度：${formatQuota(user.monthlyQuotaTokens)}</div>
+            <div>密钥数量：${formatInteger(user.keyCount)}</div>
+            <div>本月用量：${formatInteger(user.usedTokensMonth)}</div>
+            <div>本月费用：${formatMoney(user.estimatedCostMonth)}</div>
+            <div>输入单价 / 百万：${formatMoney(user.promptPricePerMillion)}</div>
+            <div>输出单价 / 百万：${formatMoney(user.completionPricePerMillion)}</div>
           </div>
           <div class="admin-inline">
-            <button class="btn" data-action="edit-user" data-user-id="${user.id}">Edit</button>
-            <button class="btn btn-danger" data-action="delete-user" data-user-id="${user.id}">Delete</button>
+            <button class="btn" data-action="edit-user" data-user-id="${user.id}">编辑</button>
+            <button class="btn btn-danger" data-action="delete-user" data-user-id="${user.id}">删除</button>
           </div>
         </article>
       `
@@ -604,7 +726,7 @@ function renderAdminKeys(payload = {}) {
     return;
   }
   if (!keys.length) {
-    nodes.adminKeys.innerHTML = `<div class="admin-card">No managed API keys</div>`;
+    nodes.adminKeys.innerHTML = `<div class="admin-card">暂未创建托管密钥</div>`;
     return;
   }
   nodes.adminKeys.innerHTML = keys
@@ -616,24 +738,24 @@ function renderAdminKeys(payload = {}) {
               <div class="admin-card-title">#${item.id} ${item.name}</div>
               <div class="admin-card-subtle">${item.maskedToken || "-"} · ${item.userName || "-"}</div>
             </div>
-            <span class="status-chip ${item.status === "active" ? "ok" : "warn"}">${String(item.status || "").toUpperCase()}</span>
+            <span class="status-chip ${item.status === "active" ? "ok" : "warn"}">${formatStatusLabel(item.status)}</span>
           </div>
           <div class="admin-card-meta">
-            <div>user: ${item.userName || "-"}</div>
-            <div>user status: ${item.userStatus || "-"}</div>
-            <div>groups: ${(item.groups || []).join(", ") || "-"}</div>
-            <div>models: ${(item.models || []).join(", ") || "-"}</div>
-            <div>expires: ${item.expiresAt || "-"}</div>
-            <div>last used: ${item.lastUsedAt || "-"}</div>
-            <div>used this month: ${formatInteger(item.usedTokensMonth)}</div>
-            <div>cost this month: ${formatMoney(item.estimatedCostMonth)}</div>
+            <div>所属用户：${item.userName || "-"}</div>
+            <div>用户状态：${formatStatusLabel(item.userStatus)}</div>
+            <div>分组：${(item.groups || []).join(", ") || "-"}</div>
+            <div>模型：${(item.models || []).join(", ") || "-"}</div>
+            <div>到期时间：${item.expiresAt || "未设置"}</div>
+            <div>上次使用：${item.lastUsedAt || "-"}</div>
+            <div>本月用量：${formatInteger(item.usedTokensMonth)}</div>
+            <div>本月费用：${formatMoney(item.estimatedCostMonth)}</div>
           </div>
           <div class="admin-inline">
-            <button class="btn" data-action="edit-key" data-key-id="${item.id}">Edit</button>
+            <button class="btn" data-action="edit-key" data-key-id="${item.id}">编辑</button>
             <button class="btn ${item.status === "active" ? "btn-danger" : ""}" data-action="toggle-key" data-key-id="${item.id}" data-next-status="${item.status === "active" ? "disabled" : "active"}">
-              ${item.status === "active" ? "Disable" : "Enable"}
+              ${item.status === "active" ? "停用" : "启用"}
             </button>
-            <button class="btn btn-danger" data-action="delete-key" data-key-id="${item.id}">Delete</button>
+            <button class="btn btn-danger" data-action="delete-key" data-key-id="${item.id}">删除</button>
           </div>
         </article>
       `
@@ -650,7 +772,7 @@ function renderAdminUsage(payload = {}) {
     nodes.adminDbPath.textContent = payload.dbPath;
   }
   if (nodes.adminUsageWindow) {
-    nodes.adminUsageWindow.textContent = `统计窗口：${payload.monthStart || "-"} -> ${payload.monthEnd || "-"}`;
+    nodes.adminUsageWindow.textContent = `统计窗口：${payload.monthStart || "-"} 至 ${payload.monthEnd || "-"}`;
   }
   if (nodes.adminUsagePrompt) {
     nodes.adminUsagePrompt.textContent = formatInteger(totals.promptTokens);
@@ -672,14 +794,14 @@ function renderAdminUsage(payload = {}) {
               <article class="admin-card">
                 <div class="admin-card-title">${item.userName || "-"}</div>
                 <div class="admin-card-meta">
-                  <div>tokens: ${formatInteger(item.totalTokens)}</div>
-                  <div>cost: ${formatMoney(item.estimatedCost)}</div>
+                  <div>总令牌：${formatInteger(item.totalTokens)}</div>
+                  <div>估算费用：${formatMoney(item.estimatedCost)}</div>
                 </div>
               </article>
             `
           )
           .join("")
-      : `<div class="admin-card">No usage yet</div>`;
+      : `<div class="admin-card">当前还没有用量记录</div>`;
   }
   if (nodes.adminUsageKeys) {
     nodes.adminUsageKeys.innerHTML = byKey.length
@@ -690,24 +812,24 @@ function renderAdminUsage(payload = {}) {
                 <div class="admin-card-title">${item.apiKeyName || "-"}</div>
                 <div class="admin-card-subtle">${item.userName || "-"}</div>
                 <div class="admin-card-meta">
-                  <div>tokens: ${formatInteger(item.totalTokens)}</div>
-                  <div>cost: ${formatMoney(item.estimatedCost)}</div>
+                  <div>总令牌：${formatInteger(item.totalTokens)}</div>
+                  <div>估算费用：${formatMoney(item.estimatedCost)}</div>
                 </div>
               </article>
             `
           )
           .join("")
-      : `<div class="admin-card">No key usage yet</div>`;
+      : `<div class="admin-card">当前还没有密钥用量</div>`;
   }
   if (nodes.adminUsageEvents) {
     nodes.adminUsageEvents.textContent = events.length
       ? events
           .map(
             (event) =>
-              `[${event.createdAt}] ${event.userName}/${event.apiKeyName} ${event.endpoint} ${event.model} tokens=${event.totalTokens} cost=${formatMoney(event.estimatedCost)} status=${event.statusCode} channel=${event.channelId || "-"}`
+              `[${event.createdAt}] ${event.userName}/${event.apiKeyName} 接口=${event.endpoint} 模型=${event.model} 总令牌=${event.totalTokens} 费用=${formatMoney(event.estimatedCost)} 状态码=${event.statusCode} 渠道=${event.channelId || "-"}`
           )
           .join("\n")
-      : "No usage events";
+      : "当前还没有用量事件";
   }
 }
 
@@ -742,11 +864,11 @@ async function saveUser() {
     });
     fillUserForm(payload?.user || {});
     await refreshAdmin();
-    setOutput(`[user saved]\n#${payload?.user?.id || "-"} ${payload?.user?.name || ""}`);
-    showToast("User saved");
+    setOutput(`[用户已保存]\n#${payload?.user?.id || "-"} ${payload?.user?.name || ""}`);
+    showToast("用户保存成功");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("User save failed", true);
+    showToast("用户保存失败", true);
   }
 }
 
@@ -761,12 +883,12 @@ async function saveApiKey() {
     });
     fillKeyForm(payload?.apiKey || {});
     await refreshAdmin();
-    const createdToken = payload?.apiKey?.token ? `\ntoken=${payload.apiKey.token}` : "";
-    setOutput(`[api key saved]\n#${payload?.apiKey?.id || "-"} ${payload?.apiKey?.name || ""}${createdToken}`);
-    showToast("API key saved");
+    const createdToken = payload?.apiKey?.token ? `\n访问密钥=${payload.apiKey.token}` : "";
+    setOutput(`[密钥已保存]\n#${payload?.apiKey?.id || "-"} ${payload?.apiKey?.name || ""}${createdToken}`);
+    showToast("密钥保存成功");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("API key save failed", true);
+    showToast("密钥保存失败", true);
   }
 }
 
@@ -777,15 +899,15 @@ async function toggleApiKey(keyId, nextStatus) {
       body: JSON.stringify({ status: nextStatus }),
     });
     await refreshAdmin();
-    showToast(`API key ${nextStatus}`);
+    showToast(`密钥状态已更新为${formatStatusLabel(nextStatus)}`);
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("API key update failed", true);
+    showToast("密钥状态更新失败", true);
   }
 }
 
 async function deleteUser(userId) {
-  if (!window.confirm(`Delete user #${userId}? This also removes linked API keys and usage events.`)) {
+  if (!window.confirm(`确认删除用户 #${userId} 吗？这会一并删除关联密钥和用量记录。`)) {
     return;
   }
   try {
@@ -794,16 +916,16 @@ async function deleteUser(userId) {
       fillUserForm({ status: "active" });
     }
     await refreshAdmin();
-    setOutput(`[user deleted]\n#${userId}`);
-    showToast("User deleted");
+    setOutput(`[用户已删除]\n#${userId}`);
+    showToast("用户已删除");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("User delete failed", true);
+    showToast("用户删除失败", true);
   }
 }
 
 async function deleteApiKey(keyId) {
-  if (!window.confirm(`Delete API key #${keyId}?`)) {
+  if (!window.confirm(`确认删除密钥 #${keyId} 吗？`)) {
     return;
   }
   try {
@@ -812,11 +934,11 @@ async function deleteApiKey(keyId) {
       fillKeyForm({ status: "active", groups: ["default"], models: ["*"] });
     }
     await refreshAdmin();
-    setOutput(`[api key deleted]\n#${keyId}`);
-    showToast("API key deleted");
+    setOutput(`[密钥已删除]\n#${keyId}`);
+    showToast("密钥已删除");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("API key delete failed", true);
+    showToast("密钥删除失败", true);
   }
 }
 
@@ -826,7 +948,7 @@ async function loadSettings() {
   if (nodes.settingsPath) {
     nodes.settingsPath.textContent = payload?.settingsPath || "-";
   }
-  setSettingsHint("autosave: loaded");
+  setSettingsHint("自动保存：已加载");
 }
 
 async function loadGatewayConfig() {
@@ -844,7 +966,7 @@ async function saveSettings(showOkToast = false) {
     return;
   }
   savingSettings = true;
-  setSettingsHint("autosave: saving...");
+  setSettingsHint("自动保存：保存中...");
   try {
     const payload = await api("/api/settings", {
       method: "POST",
@@ -853,14 +975,14 @@ async function saveSettings(showOkToast = false) {
     if (nodes.settingsPath) {
       nodes.settingsPath.textContent = payload?.settingsPath || "-";
     }
-    setSettingsHint("autosave: saved");
+    setSettingsHint("自动保存：已保存");
     if (showOkToast) {
-      showToast("Settings saved");
+      showToast("设置已保存");
     }
   } catch (error) {
     setOutput(String(error.message || error));
-    setSettingsHint("autosave: failed", true);
-    showToast("Failed to save settings", true);
+    setSettingsHint("自动保存：保存失败", true);
+    showToast("设置保存失败", true);
   } finally {
     savingSettings = false;
   }
@@ -873,7 +995,7 @@ function scheduleSettingsSave() {
   if (settingsSaveTimer) {
     clearTimeout(settingsSaveTimer);
   }
-  setSettingsHint("autosave: waiting...");
+  setSettingsHint("自动保存：等待写入...");
   settingsSaveTimer = setTimeout(() => {
     saveSettings(false);
   }, 450);
@@ -911,7 +1033,7 @@ async function refreshHealth() {
   const health = await api("/api/health");
   renderHealth(health);
   if (health?.models?.error) {
-    setOutput(`Model check failed: ${health.models.error}`);
+    setOutput(`模型检查失败：${health.models.error}`);
   }
 }
 
@@ -940,7 +1062,7 @@ async function refreshAll() {
   const results = await Promise.allSettled(tasks);
   const rejected = results.filter((item) => item.status === "rejected");
   if (rejected.length) {
-    const message = rejected[0]?.reason?.message || "Partial refresh failed";
+    const message = rejected[0]?.reason?.message || "部分模块刷新失败";
     showToast(message, true);
   }
 }
@@ -954,7 +1076,7 @@ async function saveGatewayConfig() {
     parsedConfig = JSON.parse(nodes.gatewayConfig.value || "{}");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("Gateway JSON invalid", true);
+    showToast("渠道 JSON 格式无效", true);
     return;
   }
 
@@ -974,25 +1096,25 @@ async function saveGatewayConfig() {
     await refreshHealth();
     await refreshModels();
     await refreshConfig();
-    showToast("Gateway config saved");
+    showToast("渠道配置已保存");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("Gateway save failed", true);
+    showToast("渠道配置保存失败", true);
   }
 }
 
 async function runSync() {
   try {
     const payload = await api("/api/actions/sync", { method: "POST" });
-    setOutput((payload.stdout || "").trim() || "sync done");
+    setOutput((payload.stdout || "").trim() || "账号同步完成");
     if (payload.health) {
       renderHealth(payload.health);
     }
     await refreshAccounts();
-    showToast("Accounts synced");
+    showToast("账号同步完成");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("Sync failed", true);
+    showToast("账号同步失败", true);
   }
 }
 
@@ -1002,25 +1124,25 @@ async function runServiceAction(action) {
       method: "POST",
       body: JSON.stringify({ action }),
     });
-    const report = [`[service ${action}]`, String(payload.stdout || "").trim(), String(payload.stderr || "").trim()]
+    const report = [`[服务操作：${formatActionLabel(action)}]`, String(payload.stdout || "").trim(), String(payload.stderr || "").trim()]
       .filter(Boolean)
       .join("\n");
-    setOutput(report || `${action} done`);
+    setOutput(report || `${formatActionLabel(action)}完成`);
     if (payload.health) {
       renderHealth(payload.health);
     }
     await refreshModels();
-    showToast(`Service action completed: ${action}`);
+    showToast(`服务操作已完成：${formatActionLabel(action)}`);
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast(`Service action failed: ${action}`, true);
+    showToast(`服务操作失败：${formatActionLabel(action)}`, true);
   }
 }
 
 async function uploadAuthFiles() {
   const fileInput = nodes.authFiles;
   if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-    showToast("Please select one or more auth.json files", true);
+    showToast("请先选择一个或多个 auth.json 文件", true);
     return;
   }
 
@@ -1037,29 +1159,29 @@ async function uploadAuthFiles() {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = payload.error || payload.message || `${response.status} ${response.statusText}`;
+      const message = localizeMessage(payload.error || payload.message || `${response.status} ${response.statusText}`);
       throw new Error(message);
     }
 
     const lines = [
-      `[upload] uploaded=${payload.uploaded || 0} created=${payload.created || 0} updated=${payload.updated || 0}`,
+      `[上传结果] 上传=${payload.uploaded || 0} 新建=${payload.created || 0} 更新=${payload.updated || 0}`,
       Number(payload?.service?.status?.instanceCount || 0) > 0
-        ? `fast instances: ${payload.service.status.instanceCount} active=${payload.service.status.activeCount || 0}`
+        ? `Fast 实例：${payload.service.status.instanceCount} 个，当前活跃 ${payload.service.status.activeCount || 0} 个`
         : "",
       ...(Array.isArray(payload.results)
         ? payload.results.map((item) => {
             const action = item?.action || "created";
-            const accountId = item?.accountId || "unknown";
+            const accountId = item?.accountId || "未知";
             const target = item?.target || "";
             if (action === "updated") {
-              return `[updated] ${item?.filename || "unknown"} -> ${target} (same account_id: ${accountId})`;
+              return `[更新] ${item?.filename || "未知文件"} -> ${target}（同 account_id：${accountId}）`;
             }
-            return `[created] ${item?.filename || "unknown"} -> ${target} (account_id: ${accountId})`;
+            return `[新建] ${item?.filename || "未知文件"} -> ${target}（account_id：${accountId}）`;
           })
         : Array.isArray(payload.written)
           ? payload.written
           : []),
-      ...(Array.isArray(payload.errors) && payload.errors.length ? ["errors:", ...payload.errors] : []),
+      ...(Array.isArray(payload.errors) && payload.errors.length ? ["错误：", ...payload.errors] : []),
     ];
     setOutput(lines.join("\n"));
     fileInput.value = "";
@@ -1072,17 +1194,17 @@ async function uploadAuthFiles() {
     }
 
     await refreshAll();
-    showToast("Credentials uploaded");
+    showToast("凭据上传成功");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("Upload failed", true);
+    showToast("凭据上传失败", true);
   }
 }
 
 function bindActions() {
   $("btn-refresh").addEventListener("click", async () => {
     await refreshAll();
-    showToast("Refresh complete");
+    showToast("总览刷新完成");
   });
   $("btn-sync").addEventListener("click", runSync);
   $("btn-restart").addEventListener("click", () => runServiceAction("restart"));
@@ -1097,10 +1219,10 @@ function bindActions() {
   $("btn-admin-refresh").addEventListener("click", async () => {
     try {
       await refreshAdmin();
-      showToast("Control plane refreshed");
+      showToast("控制面数据已刷新");
     } catch (error) {
       setOutput(String(error.message || error));
-      showToast("Control plane refresh failed", true);
+      showToast("控制面数据刷新失败", true);
     }
   });
   $("btn-user-save").addEventListener("click", saveUser);
@@ -1110,15 +1232,18 @@ function bindActions() {
   $("btn-dashboard-token-save").addEventListener("click", async () => {
     const token = nodes.dashboardToken?.value || "";
     setDashboardToken(token.trim());
-    updateDashboardAuthHint(token.trim() ? "dashboard auth: token saved" : "dashboard auth: token cleared", !token.trim() && dashboardAuthRequired);
+    updateDashboardAuthHint(
+      token.trim() ? "后台鉴权：口令已保存" : "后台鉴权：口令已清空",
+      !token.trim() && dashboardAuthRequired
+    );
     try {
       await Promise.allSettled([loadSettings(), refreshAll(), loadGatewayConfig(), loadGatewayStatus()]);
       settingsLoaded = true;
-      setSettingsHint("autosave: enabled");
-      showToast("Dashboard token applied");
+      setSettingsHint("自动保存：已启用");
+      showToast("后台口令已应用");
     } catch (error) {
       setOutput(String(error.message || error));
-      showToast("Dashboard token rejected", true);
+      showToast("后台口令校验失败", true);
     }
   });
   $("btn-dashboard-token-clear").addEventListener("click", () => {
@@ -1126,8 +1251,11 @@ function bindActions() {
     if (nodes.dashboardToken) {
       nodes.dashboardToken.value = "";
     }
-    updateDashboardAuthHint(dashboardAuthRequired ? "dashboard auth: token required" : "dashboard auth: disabled", dashboardAuthRequired);
-    showToast("Dashboard token cleared");
+    updateDashboardAuthHint(
+      dashboardAuthRequired ? "后台鉴权：需要管理员口令" : "后台鉴权：已关闭",
+      dashboardAuthRequired
+    );
+    showToast("后台口令已清空");
   });
 
   if (nodes.adminUsers) {
@@ -1182,6 +1310,7 @@ function bindActions() {
 }
 
 async function init() {
+  bindSidebarNav();
   bindActions();
   bindSettingsAutosave();
   fillUserForm({ status: "active" });
@@ -1189,13 +1318,13 @@ async function init() {
   await loadDashboardAuthStatus();
   if (dashboardAuthRequired && !getDashboardToken()) {
     settingsLoaded = false;
-    setSettingsHint("autosave: waiting for dashboard token", true);
+    setSettingsHint("自动保存：等待后台管理员口令", true);
     return;
   }
 
   await Promise.allSettled([loadSettings(), refreshAll(), loadGatewayConfig(), loadGatewayStatus()]);
   settingsLoaded = true;
-  setSettingsHint("autosave: enabled");
+  setSettingsHint("自动保存：已启用");
   setInterval(refreshHealth, 15000);
 }
 
