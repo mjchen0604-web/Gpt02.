@@ -11,6 +11,10 @@ def allowed_efforts_for_model(model: str | None) -> Set[str]:
     if not base:
         return DEFAULT_REASONING_EFFORTS
     normalized = base.split(":", 1)[0]
+    if normalized.startswith("gpt-5.4-fast"):
+        return {"low", "medium", "high", "xhigh"}
+    if normalized.startswith("gpt-5.4"):
+        return {"low", "medium", "high", "xhigh"}
     if normalized.startswith("gpt-5.3"):
         return {"low", "medium", "high", "xhigh"}
     if normalized.startswith("gpt-5.2"):

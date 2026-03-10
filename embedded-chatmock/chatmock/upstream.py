@@ -18,12 +18,15 @@ SUPPORTED_MODEL_GROUPS: List[Tuple[str, List[str]]] = [
     ("gpt-5", ["high", "medium", "low", "minimal"]),
     ("gpt-5.1", ["high", "medium", "low"]),
     ("gpt-5.2", ["xhigh", "high", "medium", "low"]),
+    ("gpt-5.4", ["xhigh", "high", "medium", "low"]),
+    ("gpt-5.4-fast", ["xhigh", "high", "medium", "low"]),
     ("gpt-5.3-codex", ["xhigh", "high", "medium", "low"]),
     ("gpt-5-codex", ["high", "medium", "low"]),
     ("gpt-5.2-codex", ["xhigh", "high", "medium", "low"]),
     ("gpt-5.1-codex", ["high", "medium", "low"]),
     ("gpt-5.1-codex-max", ["xhigh", "high", "medium", "low"]),
     ("gpt-5.1-codex-mini", []),
+    ("codex-mini", []),
 ]
 
 MODEL_NAME_MAPPING = {
@@ -34,6 +37,12 @@ MODEL_NAME_MAPPING = {
     "gpt5.2": "gpt-5.2",
     "gpt-5.2": "gpt-5.2",
     "gpt-5.2-latest": "gpt-5.2",
+    "gpt5.4": "gpt-5.4",
+    "gpt-5.4": "gpt-5.4",
+    "gpt-5.4-latest": "gpt-5.4",
+    "gpt5.4-fast": "gpt-5.4-fast",
+    "gpt-5.4-fast": "gpt-5.4-fast",
+    "gpt-5.4-fast-latest": "gpt-5.4-fast",
     "gpt5.3-codex": "gpt-5.3-codex",
     "gpt-5.3-codex": "gpt-5.3-codex",
     "gpt-5.3-codex-latest": "gpt-5.3-codex",
@@ -52,7 +61,7 @@ MODEL_NAME_MAPPING = {
     "codex-mini-latest": "gpt-5.1-codex-mini",
 }
 
-PUBLIC_MODEL_ALIASES = ["codex", "codex-mini"]
+PUBLIC_MODEL_ALIASES: List[str] = []
 
 
 def _log_json(prefix: str, payload: Any) -> None:

@@ -615,6 +615,10 @@ def get_chatgpt_auth_records() -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for idx, path in enumerate(_parse_auth_files_env()):
         label = os.path.basename(path) or f"file-{idx + 1}"
+        if label.lower() == "auth.json":
+            parent = os.path.basename(os.path.dirname(path))
+            if parent:
+                label = parent
         auth_obj = _read_json_file(path)
         if not isinstance(auth_obj, dict):
             records.append(

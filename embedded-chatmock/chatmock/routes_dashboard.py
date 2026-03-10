@@ -32,6 +32,8 @@ def _model_ids(expose_variants: bool) -> List[str]:
         ("gpt-5", ["high", "medium", "low", "minimal"]),
         ("gpt-5.1", ["high", "medium", "low"]),
         ("gpt-5.2", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5.4", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5.4-fast", ["xhigh", "high", "medium", "low"]),
         ("gpt-5.3-codex", ["xhigh", "high", "medium", "low"]),
         ("gpt-5-codex", ["high", "medium", "low"]),
         ("gpt-5.2-codex", ["xhigh", "high", "medium", "low"]),
@@ -615,18 +617,12 @@ def dashboard_action_upload_auths():
 
     existing_files = [] if replace else _current_auth_files()
     used_labels: set[str] = set()
-    account_to_path: Dict[str, str] = {}
 
     for existing in existing_files:
         existing_path = Path(existing)
         parent_label = existing_path.parent.name.strip().lower()
         if parent_label:
             used_labels.add(parent_label)
-        payload = _read_auth_payload(existing_path)
-        if isinstance(payload, dict):
-            account_id = _extract_account_id(payload)
-            if account_id:
-                account_to_path[account_id] = str(existing_path)
 
     for storage in incoming:
         try:
@@ -635,17 +631,9 @@ def dashboard_action_upload_auths():
             if not isinstance(payload, dict):
                 raise ValueError("JSON root must be an object")
 
-            account_id = _extract_account_id(payload)
-            target: Optional[Path] = None
-
-            if not replace and account_id and account_id in account_to_path:
-                target = Path(account_to_path[account_id])
-            else:
-                label = _next_acc_label(used_labels)
-                used_labels.add(label)
-                target = auth_root / label / "auth.json"
-                if account_id:
-                    account_to_path[account_id] = str(target)
+            label = _next_acc_label(used_labels)
+            used_labels.add(label)
+            target: Optional[Path] = auth_root / label / "auth.json"
 
             _write_auth_payload(target, payload)
             written.append(str(target))
