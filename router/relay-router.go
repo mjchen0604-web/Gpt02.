@@ -165,6 +165,17 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
 	}
 
+	ollamaCompatRouter := router.Group("/api")
+	ollamaCompatRouter.Use(middleware.RouteTag("relay"))
+	ollamaCompatRouter.Use(middleware.SystemPerformanceCheck())
+	ollamaCompatRouter.Use(middleware.TokenAuth())
+	{
+		ollamaCompatRouter.GET("/version", controller.ProxyEmbeddedChatVersion)
+		ollamaCompatRouter.GET("/tags", controller.ProxyEmbeddedChatTags)
+		ollamaCompatRouter.POST("/show", controller.ProxyEmbeddedChatShow)
+		ollamaCompatRouter.POST("/chat", controller.ProxyEmbeddedChatChat)
+	}
+
 	relayMjRouter := router.Group("/mj")
 	relayMjRouter.Use(middleware.RouteTag("relay"))
 	relayMjRouter.Use(middleware.SystemPerformanceCheck())

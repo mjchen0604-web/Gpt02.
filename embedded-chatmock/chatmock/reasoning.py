@@ -4,20 +4,56 @@ from typing import Any, Dict, Set
 
 
 DEFAULT_REASONING_EFFORTS: Set[str] = {"minimal", "low", "medium", "high", "xhigh"}
+MODEL_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def split_model_alias(model: str | None) -> tuple[str, str | None, str | None]:
+    if not isinstance(model, str) or not model:
+        return "", None, None
+
+    base = model.strip().lower()
+    if not base:
+        return "", None, None
+
+    effort: str | None = None
+    service_tier: str | None = None
+
+    if ":" in base:
+        maybe = base.rsplit(":", 1)[-1].strip()
+        if maybe in MODEL_REASONING_EFFORTS:
+            base = base[: base.rfind(":")].strip()
+            effort = maybe
+
+    if effort is None:
+        for sep in ("-", "_"):
+            for maybe in MODEL_REASONING_EFFORTS:
+                suffix = f"{sep}{maybe}"
+                if base.endswith(suffix):
+                    base = base[: -len(suffix)]
+                    effort = maybe
+                    break
+            if effort is not None:
+                break
+
+    for sep in ("-", "_"):
+        fast_suffix = f"{sep}fast"
+        if base.endswith(fast_suffix):
+            base = base[: -len(fast_suffix)]
+            service_tier = "fast"
+            break
+
+    return base, effort, service_tier
 
 
 def allowed_efforts_for_model(model: str | None) -> Set[str]:
-    base = (model or "").strip().lower()
-    if not base:
+    normalized, _, _ = split_model_alias(model)
+    if not normalized:
         return DEFAULT_REASONING_EFFORTS
-    normalized = base.split(":", 1)[0]
-    if normalized.startswith("gpt-5.4-fast"):
-        return {"low", "medium", "high", "xhigh"}
-    if normalized.startswith("gpt-5.4"):
-        return {"low", "medium", "high", "xhigh"}
     if normalized.startswith("gpt-5.3"):
         return {"low", "medium", "high", "xhigh"}
     if normalized.startswith("gpt-5.2"):
+        return {"low", "medium", "high", "xhigh"}
+    if normalized.startswith("gpt-5.4"):
         return {"low", "medium", "high", "xhigh"}
     if normalized.startswith("gpt-5.1-codex-max"):
         return {"low", "medium", "high", "xhigh"}
@@ -102,28 +138,10 @@ def apply_reasoning_to_message(
 
 def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | None:
     """Infer reasoning overrides from a model."""
-    if not isinstance(model, str) or not model:
-        return None
-    s = model.strip().lower()
-    if not s:
-        return None
-    efforts = {"minimal", "low", "medium", "high", "xhigh"}
+    _, effort, _ = split_model_alias(model)
+    return {"effort": effort} if effort else None
 
-    if ":" in s:
-        maybe = s.rsplit(":", 1)[-1].strip()
-        if maybe in efforts:
-            return {"effort": maybe}
 
-    for sep in ("-", "_"):
-        if s.endswith(sep + "minimal"):
-            return {"effort": "minimal"}
-        if s.endswith(sep + "low"):
-            return {"effort": "low"}
-        if s.endswith(sep + "medium"):
-            return {"effort": "medium"}
-        if s.endswith(sep + "high"):
-            return {"effort": "high"}
-        if s.endswith(sep + "xhigh"):
-            return {"effort": "xhigh"}
-
-    return None
+def extract_service_tier_from_model_name(model: str | None) -> str | None:
+    _, _, service_tier = split_model_alias(model)
+    return service_tier

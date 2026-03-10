@@ -21,6 +21,11 @@ const EMPTY_SETTINGS = {
   routingStrategy: 'round-robin',
   requestRetry: 0,
   maxRetryInterval: 5,
+  upstreamMode: 'chatgpt-backend',
+  codexAppServerUrl: 'ws://127.0.0.1:8787',
+  serviceTier: '',
+  manageCodexAppServer: true,
+  autoStartCodexAppServer: true,
   reasoningEffort: 'minimal',
   reasoningSummary: 'auto',
   reasoningCompat: 'think-tags',
@@ -44,10 +49,11 @@ const cardStyle = {
 };
 
 const selectOptions = (items) =>
-  items.map((item) => ({
-    label: item,
-    value: item,
-  }));
+  items.map((item) =>
+    typeof item === 'string'
+      ? { label: item, value: item }
+      : item,
+  );
 
 const safeText = (value, fallback = '-') => {
   if (value === null || value === undefined) {
@@ -68,12 +74,6 @@ export default function SettingsChatCoreRuntime() {
   const [configText, setConfigText] = useState('');
   const [settingsPath, setSettingsPath] = useState('');
   const [uploadFileList, setUploadFileList] = useState([]);
-
-  const getErrorMessage = (error, fallback) =>
-    error?.response?.data?.message ||
-    error?.response?.data?.error ||
-    error?.message ||
-    fallback;
 
   const accountColumns = useMemo(
     () => [
@@ -101,6 +101,12 @@ export default function SettingsChatCoreRuntime() {
     [],
   );
 
+  const getErrorMessage = (error, fallback) =>
+    error?.response?.data?.message ||
+    error?.response?.data?.error ||
+    error?.message ||
+    fallback;
+
   const fetchRuntimeState = async () => {
     setLoading(true);
     try {
@@ -125,7 +131,7 @@ export default function SettingsChatCoreRuntime() {
       setModels(Array.isArray(modelsRes.data?.ids) ? modelsRes.data.ids : []);
       setConfigText(configRes.data?.activeConfig || configRes.data?.localConfig || '');
     } catch (error) {
-      showError(getErrorMessage(error, '内嵌 chat 状态读取失败'));
+      showError(getErrorMessage(error, '读取内嵌 chat 状态失败'));
     } finally {
       setLoading(false);
     }
@@ -153,10 +159,10 @@ export default function SettingsChatCoreRuntime() {
         ...(res.data?.settings || settings),
       });
       setSettingsPath(res.data?.settingsPath || settingsPath);
-      showSuccess('内嵌 chat 参数已保存');
+      showSuccess('ChatCore 参数已保存');
       await fetchRuntimeState();
     } catch (error) {
-      showError(getErrorMessage(error, '内嵌 chat 参数保存失败'));
+      showError(getErrorMessage(error, 'ChatCore 参数保存失败'));
     } finally {
       setSaving(false);
     }
@@ -225,22 +231,26 @@ export default function SettingsChatCoreRuntime() {
           <Banner
             type='info'
             closeIcon={null}
-            description='这里管理容器内嵌 chat 的账号池和运行参数。客户端仍然只连接 II.fy，对内会自动转发到 chat。'
+            description='这里管理容器内嵌 chat 的账号池、上游模式和运行参数。外部客户端继续只连接 II.fy，对内由本服务转到完整 chat 内核。'
             style={{ marginBottom: 16 }}
           />
 
           <Row gutter={16} style={{ marginBottom: 16 }}>
             <Col xs={24} sm={12} md={6}>
-              {metric('服务状态', health?.service?.status || 'unknown', health?.service?.raw || '等待检测')}
+              {metric(
+                '服务状态',
+                health?.service?.status || 'unknown',
+                health?.service?.raw || '等待检测',
+              )}
             </Col>
             <Col xs={24} sm={12} md={6}>
-              {metric('账号数量', health?.accounts?.count || 0, '当前 auth 池')}
+              {metric('账号数量', health?.accounts?.count || 0, '当前 auth 账号池')}
             </Col>
             <Col xs={24} sm={12} md={6}>
-              {metric('模型数量', health?.models?.count || 0, '内嵌 chat 暴露模型')}
+              {metric('模型数量', health?.models?.count || 0, '完整 chat 暴露模型')}
             </Col>
             <Col xs={24} sm={12} md={6}>
-              {metric('配置文件', settingsPath || '-', 'dashboard settings path')}
+              {metric('设置文件', settingsPath || '-', 'dashboard settings path')}
             </Col>
           </Row>
 
@@ -270,10 +280,47 @@ export default function SettingsChatCoreRuntime() {
                   </Col>
                   <Col xs={24} sm={12}>
                     {controlBlock(
-                      '最大重试间隔(秒)',
+                      '最大重试间隔（秒）',
                       <Input
                         value={String(settings.maxRetryInterval ?? 5)}
                         onChange={(value) => handleSettingChange('maxRetryInterval', value)}
+                      />,
+                    )}
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    {controlBlock(
+                      '上游模式',
+                      <Select
+                        value={settings.upstreamMode || 'chatgpt-backend'}
+                        optionList={selectOptions([
+                          { label: 'chatgpt-backend', value: 'chatgpt-backend' },
+                          { label: 'codex-app-server', value: 'codex-app-server' },
+                        ])}
+                        onChange={(value) => handleSettingChange('upstreamMode', value)}
+                      />,
+                    )}
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    {controlBlock(
+                      'Codex App Server URL',
+                      <Input
+                        value={settings.codexAppServerUrl || 'ws://127.0.0.1:8787'}
+                        onChange={(value) => handleSettingChange('codexAppServerUrl', value)}
+                      />,
+                    )}
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    {controlBlock(
+                      'Service Tier',
+                      <Select
+                        value={settings.serviceTier ?? ''}
+                        optionList={selectOptions([
+                          { label: '默认 / 不透传', value: '' },
+                          { label: 'fast', value: 'fast' },
+                          { label: 'flex', value: 'flex' },
+                          { label: 'priority', value: 'priority' },
+                        ])}
+                        onChange={(value) => handleSettingChange('serviceTier', value)}
                       />,
                     )}
                   </Col>
@@ -398,6 +445,32 @@ export default function SettingsChatCoreRuntime() {
                   </Col>
                   <Col xs={24} sm={12} md={8}>
                     <div style={{ marginBottom: 12 }}>
+                      <Text>托管 Codex App Server</Text>
+                      <div>
+                        <Switch
+                          checked={Boolean(settings.manageCodexAppServer)}
+                          onChange={(value) =>
+                            handleSettingChange('manageCodexAppServer', value)
+                          }
+                        />
+                      </div>
+                    </div>
+                  </Col>
+                  <Col xs={24} sm={12} md={8}>
+                    <div style={{ marginBottom: 12 }}>
+                      <Text>自动启动 Codex App Server</Text>
+                      <div>
+                        <Switch
+                          checked={Boolean(settings.autoStartCodexAppServer)}
+                          onChange={(value) =>
+                            handleSettingChange('autoStartCodexAppServer', value)
+                          }
+                        />
+                      </div>
+                    </div>
+                  </Col>
+                  <Col xs={24} sm={12} md={8}>
+                    <div style={{ marginBottom: 12 }}>
                       <Text>上传时替换现有账号池</Text>
                       <div>
                         <Switch
@@ -434,7 +507,8 @@ export default function SettingsChatCoreRuntime() {
                   style={{ marginTop: 12 }}
                 />
                 <Text type='tertiary' size='small'>
-                  当前模式：{settings.uploadReplaceDefault ? '替换现有账号池' : '追加到现有账号池'}
+                  当前模式：
+                  {settings.uploadReplaceDefault ? '替换现有账号池' : '追加到现有账号池'}
                 </Text>
                 <div style={{ marginTop: 12 }}>
                   <Button type='primary' onClick={handleUploadAuths} loading={uploading}>

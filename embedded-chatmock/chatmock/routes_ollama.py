@@ -14,9 +14,10 @@ from .reasoning import (
     allowed_efforts_for_model,
     build_reasoning_param,
     extract_reasoning_from_model_name,
+    extract_service_tier_from_model_name,
 )
 from .transform import convert_ollama_messages, normalize_ollama_tools
-from .upstream import list_public_model_ids, normalize_model_name, start_upstream_request
+from .upstream import normalize_model_name, start_upstream_request
 from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses
 
 
@@ -78,6 +79,25 @@ def _instructions_for_model(model: str) -> str:
     return base
 
 
+def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None = None) -> str | None:
+    request_value = payload.get("service_tier")
+    if isinstance(request_value, str):
+        normalized = request_value.strip().lower()
+        if normalized in ("", "off", "none", "unset"):
+            return None
+        return normalized
+    alias_value = extract_service_tier_from_model_name(requested_model)
+    if isinstance(alias_value, str) and alias_value:
+        return alias_value
+    configured = current_app.config.get("SERVICE_TIER")
+    if isinstance(configured, str) and configured.strip():
+        normalized = configured.strip().lower()
+        if normalized in ("off", "none", "unset"):
+            return None
+        return normalized
+    return None
+
+
 _OLLAMA_FAKE_EVAL = {
     "total_duration": 8497226791,
     "load_duration": 1747193958,
@@ -93,7 +113,62 @@ def ollama_tags() -> Response:
     if bool(current_app.config.get("VERBOSE")):
         print("IN GET /api/tags")
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
-    model_ids = list_public_model_ids(expose_variants)
+    model_ids = [
+        "gpt-5",
+        "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.4",
+        "gpt-5.4-fast",
+        "gpt-5.3-codex",
+        "gpt-5-codex",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "codex-mini",
+    ]
+    if expose_variants:
+        model_ids.extend(
+            [
+                "gpt-5-high",
+                "gpt-5-medium",
+                "gpt-5-low",
+                "gpt-5-minimal",
+                "gpt-5.1-high",
+                "gpt-5.1-medium",
+                "gpt-5.1-low",
+                "gpt-5.2-xhigh",
+                "gpt-5.2-high",
+                "gpt-5.2-medium",
+                "gpt-5.2-low",
+                "gpt-5.4-xhigh",
+                "gpt-5.4-high",
+                "gpt-5.4-medium",
+                "gpt-5.4-low",
+                "gpt-5.4-fast-xhigh",
+                "gpt-5.4-fast-high",
+                "gpt-5.4-fast-medium",
+                "gpt-5.4-fast-low",
+                "gpt-5-codex-high",
+                "gpt-5-codex-medium",
+                "gpt-5-codex-low",
+                "gpt-5.2-codex-xhigh",
+                "gpt-5.2-codex-high",
+                "gpt-5.2-codex-medium",
+                "gpt-5.2-codex-low",
+                "gpt-5.3-codex-xhigh",
+                "gpt-5.3-codex-high",
+                "gpt-5.3-codex-medium",
+                "gpt-5.3-codex-low",
+                "gpt-5.1-codex-high",
+                "gpt-5.1-codex-medium",
+                "gpt-5.1-codex-low",
+                "gpt-5.1-codex-max-xhigh",
+                "gpt-5.1-codex-max-high",
+                "gpt-5.1-codex-max-medium",
+                "gpt-5.1-codex-max-low",
+            ]
+        )
     models = []
     for model_id in model_ids:
         models.append(
@@ -253,6 +328,7 @@ def ollama_chat() -> Response:
 
     model_reasoning = extract_reasoning_from_model_name(model)
     normalized_model = normalize_model_name(model)
+    service_tier = _resolve_service_tier(payload, model)
     upstream, error_resp = start_upstream_request(
         normalized_model,
         input_items,
@@ -266,6 +342,7 @@ def ollama_chat() -> Response:
             model_reasoning,
             allowed_efforts=allowed_efforts_for_model(model),
         ),
+        service_tier=service_tier,
     )
     if error_resp is not None:
         if verbose:
@@ -306,6 +383,7 @@ def ollama_chat() -> Response:
                     model_reasoning,
                     allowed_efforts=allowed_efforts_for_model(model),
                 ),
+                service_tier=service_tier,
             )
             record_rate_limits_from_response(upstream2)
             if err2 is None and upstream2 is not None and upstream2.status_code < 400:
@@ -334,6 +412,8 @@ def ollama_chat() -> Response:
             saw_any_summary = False
             pending_summary_paragraph = False
             full_parts: List[str] = []
+            tool_calls_stream: List[Dict[str, Any]] = []
+            done_reason = "stop"
             try:
                 for raw_line in upstream.iter_lines(decode_unicode=False):
                     if not raw_line:
@@ -462,6 +542,26 @@ def ollama_chat() -> Response:
                                 + "\n"
                             )
                             full_parts.append(delta)
+                    elif kind == "response.output_item.done":
+                        item = evt.get("item") or {}
+                        if isinstance(item, dict) and item.get("type") == "function_call":
+                            call_id = item.get("call_id") or item.get("id") or ""
+                            name = item.get("name") or ""
+                            args = item.get("arguments") or ""
+                            if not isinstance(args, str):
+                                try:
+                                    args = json.dumps(args, ensure_ascii=False)
+                                except Exception:
+                                    args = "{}"
+                            if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                                tool_calls_stream.append(
+                                    {
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": args},
+                                    }
+                                )
+                                done_reason = "tool_calls"
                     elif kind == "response.completed":
                         break
             finally:
@@ -482,8 +582,13 @@ def ollama_chat() -> Response:
                 done_obj = {
                     "model": model_out,
                     "created_at": created_at,
-                    "message": {"role": "assistant", "content": ""},
+                    "message": {
+                        "role": "assistant",
+                        "content": "" if not tool_calls_stream else "",
+                        **({"tool_calls": tool_calls_stream} if tool_calls_stream else {}),
+                    },
                     "done": True,
+                    "done_reason": done_reason,
                 }
                 done_obj.update(_OLLAMA_FAKE_EVAL)
                 yield json.dumps(done_obj) + "\n"
@@ -496,6 +601,8 @@ def ollama_chat() -> Response:
             status=200,
             mimetype="application/x-ndjson",
         )
+        if service_tier:
+            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -504,6 +611,8 @@ def ollama_chat() -> Response:
     reasoning_summary_text = ""
     reasoning_full_text = ""
     tool_calls: List[Dict[str, Any]] = []
+    observed_service_tier: str | None = None
+    completed_ok = False
     try:
         for raw in upstream.iter_lines(decode_unicode=False):
             if not raw:
@@ -520,6 +629,8 @@ def ollama_chat() -> Response:
                 evt = json.loads(data)
             except Exception:
                 continue
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
             kind = evt.get("type")
             if kind == "response.output_text.delta":
                 full_text += evt.get("delta") or ""
@@ -533,6 +644,11 @@ def ollama_chat() -> Response:
                     call_id = item.get("call_id") or item.get("id") or ""
                     name = item.get("name") or ""
                     args = item.get("arguments") or ""
+                    if not isinstance(args, str):
+                        try:
+                            args = json.dumps(args, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
                     if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
                         tool_calls.append(
                             {
@@ -542,8 +658,14 @@ def ollama_chat() -> Response:
                             }
                         )
             elif kind == "response.completed":
+                completed_ok = True
                 break
     finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
         upstream.close()
 
     if (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower() == "think-tags":
@@ -559,14 +681,24 @@ def ollama_chat() -> Response:
     out_json = {
         "model": normalize_model_name(model),
         "created_at": created_at,
-        "message": {"role": "assistant", "content": full_text, **({"tool_calls": tool_calls} if tool_calls else {})},
+        "message": {
+            "role": "assistant",
+            "content": "" if tool_calls else full_text,
+            **({"tool_calls": tool_calls} if tool_calls else {}),
+        },
         "done": True,
-        "done_reason": "stop",
+        "done_reason": "tool_calls" if tool_calls else "stop",
     }
+    if observed_service_tier:
+        out_json["service_tier"] = observed_service_tier
     out_json.update(_OLLAMA_FAKE_EVAL)
     if verbose:
         _log_json("OUT POST /api/chat", out_json)
     resp = make_response(jsonify(out_json), 200)
+    if service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+    if observed_service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp

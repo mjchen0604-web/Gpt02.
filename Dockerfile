@@ -25,14 +25,17 @@ COPY . .
 COPY --from=builder /build/dist ./web/dist
 RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)'" -o new-api
 
-FROM python:3.11-slim
+FROM node:22-bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates tzdata wget \
+    && apt-get install -y --no-install-recommends bash ca-certificates tzdata wget python3 python3-pip python-is-python3 \
     && rm -rf /var/lib/apt/lists/* \
-    && update-ca-certificates
+    && update-ca-certificates \
+    && npm install -g @openai/codex
 
 ENV PYTHONUNBUFFERED=1
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ENV CHATCORE_INTERNAL_CHAT_HOST=127.0.0.1
 ENV CHATCORE_INTERNAL_CHAT_PORT=1455
 
@@ -40,7 +43,9 @@ WORKDIR /app
 COPY --from=builder2 /build/new-api /new-api
 COPY --from=builder2 /build/embedded-chatmock /app/embedded-chatmock
 COPY scripts/start-single-service.sh /start-single-service.sh
-RUN python -m pip install --no-cache-dir -r /app/embedded-chatmock/requirements.txt \
+RUN python -m venv "$VIRTUAL_ENV" \
+    && python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /app/embedded-chatmock/requirements.txt \
     && chmod +x /start-single-service.sh
 
 EXPOSE 3000

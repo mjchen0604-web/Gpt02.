@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from flask import Flask, jsonify
 
-from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
+from .config import (
+    BASE_INSTRUCTIONS,
+    CODEX_APP_SERVER_URL_DEFAULT,
+    GPT5_CODEX_INSTRUCTIONS,
+    UPSTREAM_MODE_DEFAULT,
+)
+from .codex_manager import CodexAppServerPoolManager
 from .http import build_cors_headers
-from .routes_dashboard import apply_persisted_dashboard_settings, dashboard_bp
 from .routes_anthropic import anthropic_bp
+from .routes_dashboard import apply_persisted_dashboard_settings, dashboard_bp
 from .routes_openai import openai_bp
 from .routes_ollama import ollama_bp
 
@@ -19,8 +25,26 @@ def create_app(
     debug_model: str | None = None,
     expose_reasoning_models: bool = False,
     default_web_search: bool = False,
+    service_tier: str | None = None,
+    upstream_mode: str = UPSTREAM_MODE_DEFAULT,
+    codex_app_server_url: str = CODEX_APP_SERVER_URL_DEFAULT,
 ) -> Flask:
     app = Flask(__name__)
+    normalized_service_tier = (
+        service_tier.strip().lower() if isinstance(service_tier, str) and service_tier.strip() else None
+    )
+    if normalized_service_tier in ("off", "none", "unset"):
+        normalized_service_tier = None
+    normalized_upstream_mode = (
+        upstream_mode.strip().lower()
+        if isinstance(upstream_mode, str) and upstream_mode.strip()
+        else UPSTREAM_MODE_DEFAULT
+    )
+    normalized_codex_app_server_url = (
+        codex_app_server_url.strip()
+        if isinstance(codex_app_server_url, str) and codex_app_server_url.strip()
+        else CODEX_APP_SERVER_URL_DEFAULT
+    )
 
     app.config.update(
         VERBOSE=bool(verbose),
@@ -33,7 +57,14 @@ def create_app(
         GPT5_CODEX_INSTRUCTIONS=GPT5_CODEX_INSTRUCTIONS,
         EXPOSE_REASONING_MODELS=bool(expose_reasoning_models),
         DEFAULT_WEB_SEARCH=bool(default_web_search),
+        SERVICE_TIER=normalized_service_tier,
+        UPSTREAM_MODE=normalized_upstream_mode,
+        CODEX_APP_SERVER_URL=normalized_codex_app_server_url,
     )
+    apply_persisted_dashboard_settings(app)
+    manager = CodexAppServerPoolManager(str(app.config.get("CODEX_APP_SERVER_URL") or normalized_codex_app_server_url))
+    app.config["CODEX_APP_SERVER_MANAGER"] = manager
+    manager.autostart_if_possible()
 
     @app.get("/")
     @app.get("/health")
@@ -46,10 +77,9 @@ def create_app(
             resp.headers.setdefault(k, v)
         return resp
 
-    app.register_blueprint(dashboard_bp)
     app.register_blueprint(openai_bp)
     app.register_blueprint(ollama_bp)
     app.register_blueprint(anthropic_bp)
-    apply_persisted_dashboard_settings(app)
+    app.register_blueprint(dashboard_bp)
 
     return app

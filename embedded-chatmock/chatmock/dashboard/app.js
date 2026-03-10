@@ -1,4 +1,4 @@
-const $ = (id) => document.getElementById(id);
+﻿const $ = (id) => document.getElementById(id);
 
 const nodes = {
   serviceChip: $("service-chip"),
@@ -87,6 +87,18 @@ function classifyServiceChip(health) {
   if (serviceReady && listening && hasModels) {
     return { text: "ONLINE", className: "status-chip ok" };
   }
+  if (serviceState === "awaiting_auth") {
+    return { text: "AUTH", className: "status-chip warn" };
+  }
+  if (serviceState === "external") {
+    return { text: "EXTERNAL", className: "status-chip warn" };
+  }
+  if (serviceState === "starting") {
+    return { text: "STARTING", className: "status-chip warn" };
+  }
+  if (serviceState === "error") {
+    return { text: "ERROR", className: "status-chip bad" };
+  }
   if (serviceReady) {
     return { text: "DEGRADED", className: "status-chip warn" };
   }
@@ -103,7 +115,19 @@ function renderHealth(health) {
   nodes.metricPort.textContent = listening;
   nodes.metricModels.textContent = String(modelCount);
   nodes.metricAuths.textContent = String(authCount);
-  nodes.healthHint.textContent = `最近检查：${checkedAt}`;
+  let detail = "";
+  if (serviceState === "awaiting_auth") {
+    detail = "waiting for uploaded auth";
+  } else if (serviceState === "external") {
+    detail = "using external codex app-server";
+  } else if (serviceState === "starting") {
+    detail = "starting codex app-server";
+  } else if (serviceState === "running" && health?.service?.url) {
+    detail = String(health.service.url);
+  }
+  nodes.healthHint.textContent = detail
+    ? `status checked: ${checkedAt} · ${detail}`
+    : `status checked: ${checkedAt}`;
   const chip = classifyServiceChip(health);
   nodes.serviceChip.textContent = chip.text;
   nodes.serviceChip.className = chip.className;
@@ -117,7 +141,7 @@ function tokenPill(label, ok) {
 function renderAccounts(payload) {
   const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
   if (!accounts.length) {
-    nodes.accounts.innerHTML = `<div class="account-card">未发现账号。</div>`;
+    nodes.accounts.innerHTML = `<div class="account-card">No accounts uploaded</div>`;
     return;
   }
   nodes.accounts.innerHTML = accounts
@@ -128,7 +152,7 @@ function renderAccounts(payload) {
             <div class="account-top">
               <div>
                 <div class="account-file">${acc.label || "unknown"}</div>
-                <div class="account-mail">读取失败</div>
+                <div class="account-mail">Failed to read account</div>
               </div>
             </div>
             <div class="account-meta"><div>${acc.error}</div></div>
@@ -149,6 +173,8 @@ function renderAccounts(payload) {
             <div>refresh: ${acc.last_refresh || "-"}</div>
             <div>failures: ${acc.failures || 0}</div>
             <div>cooldown: ${acc.cooldown_remaining || 0}s</div>
+            <div>fast: ${acc.fast_status || "-"} ${acc.fast_port ? `@${acc.fast_port}` : ""}</div>
+            <div>fast requests: ${acc.fast_request_successes || 0}/${acc.fast_request_count || 0}</div>
           </div>
           ${tokenPill("access", Boolean(acc.has_access_token))}
           ${tokenPill("refresh", Boolean(acc.has_refresh_token))}
@@ -162,19 +188,19 @@ function renderAccounts(payload) {
 function renderModels(payload) {
   const ids = Array.isArray(payload?.ids) ? payload.ids : [];
   if (!ids.length) {
-    nodes.models.innerHTML = `<span class="model-chip">暂无模型数据</span>`;
+    nodes.models.innerHTML = `<span class="model-chip">No model data</span>`;
     return;
   }
   nodes.models.innerHTML = ids.map((id) => `<span class="model-chip">${id}</span>`).join("");
 }
 
 function renderConfig(payload) {
-  nodes.localConfig.textContent = payload?.localConfig || "读取失败";
-  nodes.activeConfig.textContent = payload?.activeConfig || "读取失败";
+  nodes.localConfig.textContent = payload?.localConfig || "Failed to read";
+  nodes.activeConfig.textContent = payload?.activeConfig || "Failed to read";
 }
 
 function renderLogs(payload) {
-  nodes.logs.textContent = payload?.text || "读取失败";
+  nodes.logs.textContent = payload?.text || "Failed to read";
 }
 
 function readSettingsForm() {
@@ -251,7 +277,7 @@ async function loadSettings() {
   if (nodes.settingsPath) {
     nodes.settingsPath.textContent = payload?.settingsPath || "-";
   }
-  setSettingsHint("自动保存：已加载");
+  setSettingsHint("autosave: loaded");
 }
 
 async function saveSettings(showOkToast = false) {
@@ -259,7 +285,7 @@ async function saveSettings(showOkToast = false) {
     return;
   }
   savingSettings = true;
-  setSettingsHint("自动保存：保存中...");
+  setSettingsHint("autosave: saving...");
   try {
     const payload = await api("/api/settings", {
       method: "POST",
@@ -268,14 +294,14 @@ async function saveSettings(showOkToast = false) {
     if (nodes.settingsPath) {
       nodes.settingsPath.textContent = payload?.settingsPath || "-";
     }
-    setSettingsHint("自动保存：已保存");
+    setSettingsHint("autosave: saved");
     if (showOkToast) {
-      showToast("设置已保存");
+      showToast("Settings saved");
     }
   } catch (error) {
     setOutput(String(error.message || error));
-    setSettingsHint("自动保存：失败", true);
-    showToast("设置保存失败", true);
+    setSettingsHint("autosave: failed", true);
+    showToast("Failed to save settings", true);
   } finally {
     savingSettings = false;
   }
@@ -288,7 +314,7 @@ function scheduleSettingsSave() {
   if (settingsSaveTimer) {
     clearTimeout(settingsSaveTimer);
   }
-  setSettingsHint("自动保存：等待写入...");
+  setSettingsHint("autosave: waiting...");
   settingsSaveTimer = setTimeout(() => {
     saveSettings(false);
   }, 450);
@@ -325,7 +351,7 @@ async function refreshHealth() {
   const health = await api("/api/health");
   renderHealth(health);
   if (health?.models?.error) {
-    setOutput(`模型检查失败: ${health.models.error}`);
+    setOutput(`Model check failed: ${health.models.error}`);
   }
 }
 
@@ -354,7 +380,7 @@ async function refreshAll() {
   const results = await Promise.allSettled(tasks);
   const rejected = results.filter((item) => item.status === "rejected");
   if (rejected.length) {
-    const message = rejected[0]?.reason?.message || "部分刷新失败";
+    const message = rejected[0]?.reason?.message || "Partial refresh failed";
     showToast(message, true);
   }
 }
@@ -367,10 +393,10 @@ async function runSync() {
       renderHealth(payload.health);
     }
     await refreshAccounts();
-    showToast("账号同步完成");
+    showToast("Accounts synced");
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast("同步失败", true);
+    showToast("Sync failed", true);
   }
 }
 
@@ -388,10 +414,10 @@ async function runServiceAction(action) {
       renderHealth(payload.health);
     }
     await refreshModels();
-    showToast(`服务操作完成: ${action}`);
+    showToast(`Service action completed: ${action}`);
   } catch (error) {
     setOutput(String(error.message || error));
-    showToast(`服务操作失败: ${action}`, true);
+    showToast(`Service action failed: ${action}`, true);
   }
 }
 
@@ -418,8 +444,23 @@ async function uploadAuthFiles() {
     }
 
     const lines = [
-      `[upload] uploaded=${payload.uploaded || 0}`,
-      ...(Array.isArray(payload.written) ? payload.written : []),
+      `[upload] uploaded=${payload.uploaded || 0} created=${payload.created || 0} updated=${payload.updated || 0}`,
+      Number(payload?.service?.status?.instanceCount || 0) > 0
+        ? `fast instances: ${payload.service.status.instanceCount} active=${payload.service.status.activeCount || 0}`
+        : "",
+      ...(Array.isArray(payload.results)
+        ? payload.results.map((item) => {
+            const action = item?.action || "created";
+            const accountId = item?.accountId || "unknown";
+            const target = item?.target || "";
+            if (action === "updated") {
+              return `[updated] ${item?.filename || "unknown"} -> ${target} (same account_id: ${accountId})`;
+            }
+            return `[created] ${item?.filename || "unknown"} -> ${target} (account_id: ${accountId})`;
+          })
+        : Array.isArray(payload.written)
+          ? payload.written
+          : []),
       ...(Array.isArray(payload.errors) && payload.errors.length ? ["errors:", ...payload.errors] : []),
     ];
     setOutput(lines.join("\n"));
@@ -443,7 +484,7 @@ async function uploadAuthFiles() {
 function bindActions() {
   $("btn-refresh").addEventListener("click", async () => {
     await refreshAll();
-    showToast("刷新完成");
+    showToast("Refresh complete");
   });
   $("btn-sync").addEventListener("click", runSync);
   $("btn-restart").addEventListener("click", () => runServiceAction("restart"));
@@ -465,8 +506,12 @@ async function init() {
 
   await Promise.allSettled([loadSettings(), refreshAll()]);
   settingsLoaded = true;
-  setSettingsHint("自动保存：已启用");
+  setSettingsHint("autosave: enabled");
   setInterval(refreshHealth, 15000);
 }
 
 init();
+
+
+
+

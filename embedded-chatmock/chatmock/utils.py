@@ -8,14 +8,18 @@ import os
 import secrets
 import sys
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 from .config import CLIENT_ID_DEFAULT, OAUTH_TOKEN_URL
 
+
 _AUTH_POOL_RR_LOCK = threading.Lock()
 _AUTH_POOL_RR_INDEX = 0
+_AUTH_POOL_STATE_LOCK = threading.Lock()
+_AUTH_POOL_STATE: Dict[str, Dict[str, Any]] = {}
 
 
 def eprint(*args, **kwargs) -> None:
@@ -31,12 +35,18 @@ def get_home_dir() -> str:
 
 def _candidate_auth_bases() -> List[str]:
     bases: List[str] = []
-    for base in [
+    explicit_bases = [
         os.getenv("CHATGPT_LOCAL_HOME"),
         os.getenv("CODEX_HOME"),
-        os.path.expanduser("~/.chatgpt-local"),
-        os.path.expanduser("~/.codex"),
-    ]:
+    ]
+    if any(isinstance(base, str) and base for base in explicit_bases):
+        source_bases = explicit_bases
+    else:
+        source_bases = [
+            os.path.expanduser("~/.chatgpt-local"),
+            os.path.expanduser("~/.codex"),
+        ]
+    for base in source_bases:
         if not isinstance(base, str) or not base:
             continue
         if base not in bases:
@@ -396,104 +406,6 @@ def _candidate_from_auth_obj(
     )
 
 
-def _ordered_candidates_round_robin(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    if len(candidates) <= 1:
-        return candidates
-    global _AUTH_POOL_RR_INDEX
-    with _AUTH_POOL_RR_LOCK:
-        start = _AUTH_POOL_RR_INDEX % len(candidates)
-        _AUTH_POOL_RR_INDEX = (_AUTH_POOL_RR_INDEX + 1) % len(candidates)
-    if start == 0:
-        return candidates
-    return candidates[start:] + candidates[:start]
-
-
-def _parse_auth_files_env() -> List[str]:
-    raw = (os.getenv("CHATGPT_LOCAL_AUTH_FILES") or "").strip()
-    if not raw:
-        return []
-    paths: List[str] = []
-    for part in raw.split(","):
-        path = part.strip()
-        if not path:
-            continue
-        if path not in paths:
-            paths.append(path)
-    return paths
-
-
-def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
-    paths = _parse_auth_files_env()
-    for idx, path in enumerate(paths):
-        auth_obj = _read_json_file(path)
-        if not isinstance(auth_obj, dict):
-            eprint(f"WARNING: skipped invalid auth file: {path}")
-            continue
-        label = os.path.basename(path) or f"file-{idx + 1}"
-        candidate, changed = _candidate_from_auth_obj(auth_obj, label=label, ensure_fresh=ensure_fresh)
-        if changed:
-            _write_json_file(path, auth_obj)
-        if candidate is not None:
-            out.append(candidate)
-    return out
-
-
-def _extract_pool_accounts(raw_pool: Dict[str, Any] | List[Any]) -> List[Dict[str, Any]]:
-    if isinstance(raw_pool, list):
-        return [entry for entry in raw_pool if isinstance(entry, dict)]
-    if isinstance(raw_pool, dict):
-        accounts = raw_pool.get("accounts")
-        if isinstance(accounts, list):
-            return [entry for entry in accounts if isinstance(entry, dict)]
-    return []
-
-
-def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, str]]:
-    path = _find_auth_file_path("auth_pool.json")
-    if not path:
-        return []
-    raw_pool = _read_raw_json_file(path)
-    if not isinstance(raw_pool, (dict, list)):
-        return []
-    accounts = _extract_pool_accounts(raw_pool)
-    if not accounts:
-        return []
-
-    changed = False
-    out: List[Dict[str, str]] = []
-    for idx, account_obj in enumerate(accounts):
-        label = ""
-        for key in ("name", "alias", "label"):
-            v = account_obj.get(key)
-            if isinstance(v, str) and v.strip():
-                label = v.strip()
-                break
-        if not label:
-            label = f"pool-{idx + 1}"
-        candidate, account_changed = _candidate_from_auth_obj(account_obj, label=label, ensure_fresh=ensure_fresh)
-        changed = changed or account_changed
-        if candidate is not None:
-            out.append(candidate)
-
-    if changed:
-        _write_json_file(path, raw_pool)
-    return out
-
-
-def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, str]]:
-    candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
-    if not candidates:
-        candidates = _load_auth_candidates_from_pool_file(ensure_fresh=ensure_fresh)
-    if not candidates:
-        access_token, account_id, id_token = load_chatgpt_tokens(ensure_fresh=ensure_fresh)
-        if not account_id:
-            account_id = _derive_account_id(id_token)
-        if isinstance(access_token, str) and access_token and isinstance(account_id, str) and account_id:
-            candidates = [{"label": "default", "access_token": access_token, "account_id": account_id}]
-    return _ordered_candidates_round_robin(candidates)
-
-
 def _should_refresh_access_token(access_token: Optional[str], last_refresh: Any) -> bool:
     if not isinstance(access_token, str) or not access_token:
         return True
@@ -595,87 +507,328 @@ def _now_iso8601() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:
+    access_token, account_id, id_token = load_chatgpt_tokens()
+    if not account_id:
+        account_id = _derive_account_id(id_token)
+    return access_token, account_id
+
+
+def _ordered_candidates_round_robin(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    if len(candidates) <= 1:
+        return candidates
+    global _AUTH_POOL_RR_INDEX
+    with _AUTH_POOL_RR_LOCK:
+        start = _AUTH_POOL_RR_INDEX % len(candidates)
+        _AUTH_POOL_RR_INDEX = (_AUTH_POOL_RR_INDEX + 1) % len(candidates)
+    if start == 0:
+        return candidates
+    return candidates[start:] + candidates[:start]
+
+
+def _routing_strategy() -> str:
+    raw = (os.getenv("CHATGPT_LOCAL_ROUTING_STRATEGY") or "round-robin").strip().lower()
+    if raw in ("round-robin", "rr"):
+        return "round-robin"
+    if raw in ("random", "rand"):
+        return "random"
+    return "first"
+
+
+def _ordered_candidates_by_strategy(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    if len(candidates) <= 1:
+        return candidates
+    strategy = _routing_strategy()
+    if strategy == "round-robin":
+        return _ordered_candidates_round_robin(candidates)
+    if strategy == "random":
+        out = list(candidates)
+        for i in range(len(out) - 1, 0, -1):
+            j = secrets.randbelow(i + 1)
+            out[i], out[j] = out[j], out[i]
+        return out
+    return candidates
+
+
 def get_request_retry_limit() -> int:
-    raw = (os.getenv("CHATGPT_LOCAL_REQUEST_RETRY") or "0").strip()
+    raw = (os.getenv("CHATGPT_LOCAL_REQUEST_RETRY") or "3").strip()
     try:
-        return max(0, int(raw))
+        value = int(raw)
     except Exception:
-        return 0
+        value = 3
+    return max(0, min(10, value))
 
 
 def get_max_retry_interval_seconds() -> int:
-    raw = (os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "5").strip()
+    raw = (os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "30").strip()
     try:
-        return max(1, int(raw))
+        value = int(raw)
     except Exception:
-        return 5
+        value = 30
+    return max(1, min(300, value))
+
+
+def get_retryable_statuses() -> set[int]:
+    return {401, 403, 429, 500, 502, 503, 504}
+
+
+def _get_cooldown_until(label: str) -> float:
+    with _AUTH_POOL_STATE_LOCK:
+        state = _AUTH_POOL_STATE.get(label) or {}
+        try:
+            return float(state.get("cooldown_until") or 0.0)
+        except Exception:
+            return 0.0
+
+
+def _apply_account_cooldown(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    if len(candidates) <= 1:
+        return candidates
+    now = time.time()
+    available: List[Dict[str, str]] = []
+    cooling: List[tuple[float, Dict[str, str]]] = []
+    for candidate in candidates:
+        label = candidate.get("label") or ""
+        cooldown_until = _get_cooldown_until(label)
+        if cooldown_until > now:
+            cooling.append((cooldown_until, candidate))
+        else:
+            available.append(candidate)
+    if available:
+        return available
+    if not cooling:
+        return candidates
+    cooling.sort(key=lambda x: x[0])
+    return [item[1] for item in cooling]
+
+
+def mark_chatgpt_auth_result(
+    label: str,
+    *,
+    success: bool,
+    status_code: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    if not isinstance(label, str) or not label:
+        return
+    now = time.time()
+    max_retry_interval = get_max_retry_interval_seconds()
+    with _AUTH_POOL_STATE_LOCK:
+        state = dict(_AUTH_POOL_STATE.get(label) or {})
+        if success:
+            state["failures"] = 0
+            state["cooldown_until"] = 0.0
+            state["last_status"] = status_code if isinstance(status_code, int) else 200
+            state["last_error"] = ""
+            state["updated_at"] = now
+            _AUTH_POOL_STATE[label] = state
+            return
+
+        failures = int(state.get("failures") or 0) + 1
+        if isinstance(status_code, int) and status_code in (401, 403):
+            base = 5
+        elif isinstance(status_code, int) and status_code == 429:
+            base = 2
+        else:
+            base = 1
+        cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
+        state["failures"] = failures
+        state["cooldown_until"] = now + float(cooldown)
+        state["last_status"] = status_code
+        state["last_error"] = error_message or ""
+        state["updated_at"] = now
+        _AUTH_POOL_STATE[label] = state
+
+
+def get_chatgpt_auth_pool_state() -> Dict[str, Dict[str, Any]]:
+    with _AUTH_POOL_STATE_LOCK:
+        return {k: dict(v) for k, v in _AUTH_POOL_STATE.items()}
+
+
+def _compact_account_id(raw: str | None) -> str:
+    if not isinstance(raw, str) or not raw:
+        return ""
+    if len(raw) <= 12:
+        return raw
+    return f"{raw[:8]}...{raw[-4:]}"
+
+
+def _state_for_label(label: str) -> Dict[str, Any]:
+    with _AUTH_POOL_STATE_LOCK:
+        state = dict(_AUTH_POOL_STATE.get(label) or {})
+    now = time.time()
+    cooldown_until = float(state.get("cooldown_until") or 0.0)
+    remaining = max(0, int(cooldown_until - now))
+    return {
+        "failures": int(state.get("failures") or 0),
+        "last_status": state.get("last_status"),
+        "last_error": state.get("last_error") or "",
+        "cooldown_remaining": remaining,
+        "updated_at": state.get("updated_at"),
+    }
+
+
+def _auth_record_from_obj(
+    auth_obj: Dict[str, Any],
+    *,
+    label: str,
+    source: str,
+) -> Dict[str, Any]:
+    access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
+    if not isinstance(account_id, str) or not account_id:
+        account_id = _derive_account_id(id_token)
+    state = _state_for_label(label)
+    id_claims = parse_jwt_claims(id_token) or {}
+    access_claims = parse_jwt_claims(access_token) or {}
+    plan_raw = (access_claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type") or ""
+    return {
+        "label": label,
+        "source": source,
+        "account_id": _compact_account_id(account_id),
+        "email": id_claims.get("email") or id_claims.get("preferred_username") or "",
+        "plan": str(plan_raw).lower() if isinstance(plan_raw, str) else "",
+        "last_refresh": last_refresh if isinstance(last_refresh, str) else "",
+        "has_access_token": bool(isinstance(access_token, str) and access_token),
+        "has_refresh_token": bool(isinstance(refresh_token, str) and refresh_token),
+        "has_id_token": bool(isinstance(id_token, str) and id_token),
+        **state,
+    }
 
 
 def get_chatgpt_auth_records() -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
-    for idx, path in enumerate(_parse_auth_files_env()):
-        label = os.path.basename(path) or f"file-{idx + 1}"
-        if label.lower() == "auth.json":
-            parent = os.path.basename(os.path.dirname(path))
-            if parent:
-                label = parent
-        auth_obj = _read_json_file(path)
-        if not isinstance(auth_obj, dict):
-            records.append(
-                {
-                    "label": label,
-                    "source": path,
-                    "error": "invalid or unreadable auth.json",
-                }
-            )
-            continue
 
-        access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
-        records.append(
-            {
-                "label": label,
-                "source": path,
-                "last_status": "ready" if access_token and account_id else "missing_tokens",
-                "account_id": account_id or _derive_account_id(id_token) or "",
-                "last_refresh": last_refresh if isinstance(last_refresh, str) else "",
-                "failures": 0,
-                "cooldown_remaining": 0,
-                "has_access_token": bool(access_token),
-                "has_refresh_token": bool(refresh_token),
-                "has_id_token": bool(id_token),
-            }
-        )
-
-    if records:
+    auth_files = _parse_auth_files_env()
+    if auth_files:
+        for idx, path in enumerate(auth_files):
+            auth_obj = _read_json_file(path)
+            dirname = os.path.basename(os.path.dirname(path))
+            filename = os.path.basename(path)
+            label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
+            if not isinstance(auth_obj, dict):
+                records.append(
+                    {
+                        "label": label,
+                        "source": path,
+                        "error": "invalid auth file",
+                        **_state_for_label(label),
+                    }
+                )
+                continue
+            records.append(_auth_record_from_obj(auth_obj, label=label, source=path))
         return records
 
-    auth = read_auth_file()
-    if not isinstance(auth, dict):
+    pool_path = _find_auth_file_path("auth_pool.json")
+    if pool_path:
+        raw_pool = _read_raw_json_file(pool_path)
+        accounts = _extract_pool_accounts(raw_pool) if isinstance(raw_pool, (dict, list)) else []
+        for idx, account_obj in enumerate(accounts):
+            label = ""
+            for key in ("name", "alias", "label"):
+                value = account_obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    label = value.strip()
+                    break
+            if not label:
+                label = f"pool-{idx + 1}"
+            records.append(_auth_record_from_obj(account_obj, label=label, source=f"{pool_path}#{idx + 1}"))
+        if records:
+            return records
+
+    default_path = _find_auth_file_path("auth.json")
+    default_auth = read_auth_file()
+    if isinstance(default_auth, dict):
+        records.append(_auth_record_from_obj(default_auth, label="default", source=default_path or "auth.json"))
+    return records
+
+
+def _parse_auth_files_env() -> List[str]:
+    raw = (os.getenv("CHATGPT_LOCAL_AUTH_FILES") or "").strip()
+    if not raw:
+        return []
+    paths: List[str] = []
+    for part in raw.split(","):
+        path = part.strip()
+        if not path:
+            continue
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    paths = _parse_auth_files_env()
+    for idx, path in enumerate(paths):
+        auth_obj = _read_json_file(path)
+        if not isinstance(auth_obj, dict):
+            eprint(f"WARNING: skipped invalid auth file: {path}")
+            continue
+        dirname = os.path.basename(os.path.dirname(path))
+        filename = os.path.basename(path)
+        label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
+        candidate, changed = _candidate_from_auth_obj(auth_obj, label=label, ensure_fresh=ensure_fresh)
+        if changed:
+            _write_json_file(path, auth_obj)
+        if candidate is not None:
+            out.append(candidate)
+    return out
+
+
+def _extract_pool_accounts(raw_pool: Dict[str, Any] | List[Any]) -> List[Dict[str, Any]]:
+    if isinstance(raw_pool, list):
+        return [entry for entry in raw_pool if isinstance(entry, dict)]
+    if isinstance(raw_pool, dict):
+        accounts = raw_pool.get("accounts")
+        if isinstance(accounts, list):
+            return [entry for entry in accounts if isinstance(entry, dict)]
+    return []
+
+
+def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+    path = _find_auth_file_path("auth_pool.json")
+    if not path:
+        return []
+    raw_pool = _read_raw_json_file(path)
+    if not isinstance(raw_pool, (dict, list)):
+        return []
+    accounts = _extract_pool_accounts(raw_pool)
+    if not accounts:
         return []
 
-    access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth)
-    return [
-        {
-            "label": "default",
-            "source": "auth.json",
-            "last_status": "ready" if access_token and account_id else "missing_tokens",
-            "account_id": account_id or _derive_account_id(id_token) or "",
-            "last_refresh": last_refresh if isinstance(last_refresh, str) else "",
-            "failures": 0,
-            "cooldown_remaining": 0,
-            "has_access_token": bool(access_token),
-            "has_refresh_token": bool(refresh_token),
-            "has_id_token": bool(id_token),
-        }
-    ]
+    changed = False
+    out: List[Dict[str, str]] = []
+    for idx, account_obj in enumerate(accounts):
+        label = ""
+        for key in ("name", "alias", "label"):
+            value = account_obj.get(key)
+            if isinstance(value, str) and value.strip():
+                label = value.strip()
+                break
+        if not label:
+            label = f"pool-{idx + 1}"
+        candidate, account_changed = _candidate_from_auth_obj(account_obj, label=label, ensure_fresh=ensure_fresh)
+        changed = changed or account_changed
+        if candidate is not None:
+            out.append(candidate)
+
+    if changed:
+        _write_json_file(path, raw_pool)
+    return out
 
 
-def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:
-    candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
+def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+    candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
     if not candidates:
-        return None, None
-    first = candidates[0]
-    return first.get("access_token"), first.get("account_id")
+        candidates = _load_auth_candidates_from_pool_file(ensure_fresh=ensure_fresh)
+    if not candidates:
+        access_token, account_id, id_token = load_chatgpt_tokens(ensure_fresh=ensure_fresh)
+        if not account_id:
+            account_id = _derive_account_id(id_token)
+        if isinstance(access_token, str) and access_token and isinstance(account_id, str) and account_id:
+            candidates = [{"label": "default", "access_token": access_token, "account_id": account_id}]
+    candidates = _apply_account_cooldown(candidates)
+    return _ordered_candidates_by_strategy(candidates)
 
 
 def sse_translate_chat(
@@ -694,6 +847,7 @@ def sse_translate_chat(
     think_closed = False
     saw_output = False
     sent_stop_chunk = False
+    sent_tool_finish = False
     saw_any_summary = False
     pending_summary_paragraph = False
     upstream_usage = None
@@ -782,79 +936,7 @@ def sse_translate_chat(
                 response_id = evt["response"].get("id") or response_id
 
             if isinstance(kind, str) and ("web_search_call" in kind):
-                try:
-                    call_id = evt.get("item_id") or "ws_call"
-                    if verbose and vlog:
-                        try:
-                            vlog(f"CM_TOOLS {kind} id={call_id} -> tool_calls(web_search)")
-                        except Exception:
-                            pass
-                    item = evt.get('item') if isinstance(evt.get('item'), dict) else {}
-                    params_dict = ws_state.setdefault(call_id, {}) if isinstance(ws_state.get(call_id), dict) else {}
-                    def _merge_from(src):
-                        if not isinstance(src, dict):
-                            return
-                        for whole in ('parameters','args','arguments','input'):
-                            if isinstance(src.get(whole), dict):
-                                params_dict.update(src.get(whole))
-                        if isinstance(src.get('query'), str): params_dict.setdefault('query', src.get('query'))
-                        if isinstance(src.get('q'), str): params_dict.setdefault('query', src.get('q'))
-                        for rk in ('recency','time_range','days'):
-                            if src.get(rk) is not None and rk not in params_dict: params_dict[rk] = src.get(rk)
-                        for dk in ('domains','include_domains','include'):
-                            if isinstance(src.get(dk), list) and 'domains' not in params_dict: params_dict['domains'] = src.get(dk)
-                        for mk in ('max_results','topn','limit'):
-                            if src.get(mk) is not None and 'max_results' not in params_dict: params_dict['max_results'] = src.get(mk)
-                    _merge_from(item)
-                    _merge_from(evt if isinstance(evt, dict) else None)
-                    params = params_dict if params_dict else None
-                    if isinstance(params, dict):
-                        try:
-                            ws_state.setdefault(call_id, {}).update(params)
-                        except Exception:
-                            pass
-                    eff_params = ws_state.get(call_id, params if isinstance(params, (dict, list, str)) else {})
-                    args_str = _serialize_tool_args(eff_params)
-                    if call_id not in ws_index:
-                        ws_index[call_id] = ws_next_index
-                        ws_next_index += 1
-                    _idx = ws_index.get(call_id, 0)
-                    delta_chunk = {
-                        "id": response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {
-                                    "tool_calls": [
-                                        {
-                                            "index": _idx,
-                                            "id": call_id,
-                                            "type": "function",
-                                            "function": {"name": "web_search", "arguments": args_str},
-                                        }
-                                    ]
-                                },
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                    yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
-                    if kind.endswith(".completed") or kind.endswith(".done"):
-                        finish_chunk = {
-                            "id": response_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": model,
-                            "choices": [
-                                {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
-                            ],
-                        }
-                        yield f"data: {json.dumps(finish_chunk)}\n\n".encode("utf-8")
-                except Exception:
-                    pass
+                continue
 
             if kind == "response.output_text.delta":
                 delta = evt.get("delta") or ""
@@ -880,10 +962,10 @@ def sse_translate_chat(
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
             elif kind == "response.output_item.done":
                 item = evt.get("item") or {}
-                if isinstance(item, dict) and (item.get("type") == "function_call" or item.get("type") == "web_search_call"):
+                if isinstance(item, dict) and item.get("type") == "function_call":
                     call_id = item.get("call_id") or item.get("id") or ""
-                    name = item.get("name") or ("web_search" if item.get("type") == "web_search_call" else "")
-                    raw_args = item.get("arguments") or item.get("parameters")
+                    name = item.get("name") or ""
+                    raw_args = item.get("arguments")
                     if isinstance(raw_args, dict):
                         try:
                             ws_state.setdefault(call_id, {}).update(raw_args)
@@ -894,11 +976,6 @@ def sse_translate_chat(
                         args = _serialize_tool_args(eff_args)
                     except Exception:
                         args = "{}"
-                    if item.get("type") == "web_search_call" and verbose and vlog:
-                        try:
-                            vlog(f"CM_TOOLS response.output_item.done web_search_call id={call_id} has_args={bool(args)}")
-                        except Exception:
-                            pass
                     if call_id not in ws_index:
                         ws_index[call_id] = ws_next_index
                         ws_next_index += 1
@@ -936,6 +1013,8 @@ def sse_translate_chat(
                             "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
                         }
                         yield f"data: {json.dumps(finish_chunk)}\n\n".encode("utf-8")
+                        sent_stop_chunk = True
+                        sent_tool_finish = True
             elif kind == "response.reasoning_summary_part.added":
                 if compat in ("think-tags", "o3"):
                     if saw_any_summary:

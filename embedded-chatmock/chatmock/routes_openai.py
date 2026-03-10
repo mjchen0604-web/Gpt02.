@@ -14,8 +14,9 @@ from .reasoning import (
     apply_reasoning_to_message,
     build_reasoning_param,
     extract_reasoning_from_model_name,
+    extract_service_tier_from_model_name,
 )
-from .upstream import list_public_model_ids, normalize_model_name, start_upstream_request
+from .upstream import normalize_model_name, start_upstream_request
 from .utils import (
     convert_chat_messages_to_responses_input,
     convert_tools_chat_to_responses,
@@ -64,6 +65,63 @@ def _instructions_for_model(model: str) -> str:
         if isinstance(codex, str) and codex.strip():
             return codex
     return base
+
+
+def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None = None) -> str | None:
+    request_value = payload.get("service_tier")
+    if isinstance(request_value, str):
+        normalized = request_value.strip().lower()
+        if normalized in ("", "off", "none", "unset"):
+            return None
+        return normalized
+    alias_value = extract_service_tier_from_model_name(requested_model)
+    if isinstance(alias_value, str) and alias_value:
+        return alias_value
+    configured = current_app.config.get("SERVICE_TIER")
+    if isinstance(configured, str) and configured.strip():
+        normalized = configured.strip().lower()
+        if normalized in ("off", "none", "unset"):
+            return None
+        return normalized
+    return None
+
+
+def _resolve_web_search_mode(
+    payload: Dict[str, Any],
+    tools_payload: List[Dict[str, Any]],
+    responses_tools_payload: List[Dict[str, Any]],
+) -> str:
+    request_value = payload.get("web_search_mode")
+    if isinstance(request_value, str):
+        normalized = request_value.strip().lower()
+        if normalized in ("disabled", "off", "none", "unset", "false"):
+            return "disabled"
+        if normalized in ("cached", "preview", "web_search_preview"):
+            return "cached"
+        if normalized in ("live", "on", "true", "web_search"):
+            return "live"
+
+    responses_tool_choice = payload.get("responses_tool_choice")
+    if isinstance(responses_tool_choice, str) and responses_tool_choice.strip().lower() == "none":
+        return "disabled"
+
+    requested_modes: List[str] = []
+    for tool in list(tools_payload or []) + list(responses_tools_payload or []):
+        if not isinstance(tool, dict):
+            continue
+        tool_type = tool.get("type")
+        if tool_type == "web_search":
+            requested_modes.append("live")
+        elif tool_type == "web_search_preview":
+            requested_modes.append("cached")
+
+    if "live" in requested_modes:
+        return "live"
+    if "cached" in requested_modes:
+        return "cached"
+    if bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
+        return "live"
+    return "disabled"
 
 
 @openai_bp.route("/v1/chat/completions", methods=["POST"])
@@ -117,12 +175,18 @@ def chat_completions() -> Response:
     stream_options = payload.get("stream_options") if isinstance(payload.get("stream_options"), dict) else {}
     include_usage = bool(stream_options.get("include_usage", False))
 
-    tools_responses = convert_tools_chat_to_responses(payload.get("tools"))
+    raw_tools_payload = payload.get("tools") if isinstance(payload.get("tools"), list) else []
+    tools_responses = convert_tools_chat_to_responses(raw_tools_payload)
     tool_choice = payload.get("tool_choice", "auto")
     parallel_tool_calls = bool(payload.get("parallel_tool_calls", False))
     responses_tools_payload = payload.get("responses_tools") if isinstance(payload.get("responses_tools"), list) else []
-    extra_tools: List[Dict[str, Any]] = []
-    had_responses_tools = False
+    builtin_search_tools: List[Dict[str, Any]] = []
+    had_builtin_search_tools = False
+    for _t in raw_tools_payload:
+        if not (isinstance(_t, dict) and isinstance(_t.get("type"), str)):
+            continue
+        if _t.get("type") in ("web_search", "web_search_preview"):
+            builtin_search_tools.append({"type": _t.get("type")})
     if isinstance(responses_tools_payload, list):
         for _t in responses_tools_payload:
             if not (isinstance(_t, dict) and isinstance(_t.get("type"), str)):
@@ -137,18 +201,18 @@ def chat_completions() -> Response:
                 if verbose:
                     _log_json("OUT POST /v1/chat/completions", err)
                 return jsonify(err), 400
-            extra_tools.append(_t)
+            builtin_search_tools.append({"type": _t.get("type")})
 
-        if not extra_tools and bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
+        if not builtin_search_tools and bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
             responses_tool_choice = payload.get("responses_tool_choice")
             if not (isinstance(responses_tool_choice, str) and responses_tool_choice == "none"):
-                extra_tools = [{"type": "web_search"}]
+                builtin_search_tools = [{"type": "web_search"}]
 
-        if extra_tools:
+        if builtin_search_tools:
             import json as _json
             MAX_TOOLS_BYTES = 32768
             try:
-                size = len(_json.dumps(extra_tools))
+                size = len(_json.dumps(builtin_search_tools))
             except Exception:
                 size = 0
             if size > MAX_TOOLS_BYTES:
@@ -156,8 +220,8 @@ def chat_completions() -> Response:
                 if verbose:
                     _log_json("OUT POST /v1/chat/completions", err)
                 return jsonify(err), 400
-            had_responses_tools = True
-            tools_responses = (tools_responses or []) + extra_tools
+            had_builtin_search_tools = True
+            tools_responses = (tools_responses or []) + builtin_search_tools
 
     responses_tool_choice = payload.get("responses_tool_choice")
     if isinstance(responses_tool_choice, str) and responses_tool_choice in ("auto", "none"):
@@ -171,6 +235,8 @@ def chat_completions() -> Response:
 
     model_reasoning = extract_reasoning_from_model_name(requested_model)
     reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+    service_tier = _resolve_service_tier(payload, requested_model)
+    web_search_mode = _resolve_web_search_mode(payload, raw_tools_payload, responses_tools_payload)
     reasoning_param = build_reasoning_param(
         reasoning_effort,
         reasoning_summary,
@@ -186,6 +252,8 @@ def chat_completions() -> Response:
         tool_choice=tool_choice,
         parallel_tool_calls=parallel_tool_calls,
         reasoning_param=reasoning_param,
+        service_tier=service_tier,
+        web_search_mode=web_search_mode,
     )
     if error_resp is not None:
         if verbose:
@@ -210,7 +278,7 @@ def chat_completions() -> Response:
             err_body = json.loads(raw.decode("utf-8", errors="ignore")) if raw else {"raw": upstream.text}
         except Exception:
             err_body = {"raw": upstream.text}
-        if had_responses_tools:
+        if had_builtin_search_tools:
             if verbose:
                 print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
             base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
@@ -223,6 +291,8 @@ def chat_completions() -> Response:
                 tool_choice=safe_choice,
                 parallel_tool_calls=parallel_tool_calls,
                 reasoning_param=reasoning_param,
+                service_tier=service_tier,
+                web_search_mode="disabled",
             )
             record_rate_limits_from_response(upstream2)
             if err2 is None and upstream2 is not None and upstream2.status_code < 400:
@@ -264,6 +334,8 @@ def chat_completions() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+        if service_tier:
+            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -275,6 +347,8 @@ def chat_completions() -> Response:
     tool_calls: List[Dict[str, Any]] = []
     error_message: str | None = None
     usage_obj: Dict[str, int] | None = None
+    observed_service_tier: str | None = None
+    completed_ok = False
 
     def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
         try:
@@ -309,6 +383,8 @@ def chat_completions() -> Response:
                 usage_obj = mu
             if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
                 response_id = evt["response"].get("id") or response_id
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
             if kind == "response.output_text.delta":
                 full_text += evt.get("delta") or ""
             elif kind == "response.reasoning_summary_text.delta":
@@ -321,6 +397,11 @@ def chat_completions() -> Response:
                     call_id = item.get("call_id") or item.get("id") or ""
                     name = item.get("name") or ""
                     args = item.get("arguments") or ""
+                    if not isinstance(args, str):
+                        try:
+                            args = json.dumps(args, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
                     if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
                         tool_calls.append(
                             {
@@ -332,8 +413,19 @@ def chat_completions() -> Response:
             elif kind == "response.failed":
                 error_message = evt.get("response", {}).get("error", {}).get("message", "response.failed")
             elif kind == "response.completed":
+                completed_ok = True
                 break
     finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
+        elif error_message and hasattr(upstream, "mark_failure"):
+            try:
+                upstream.mark_failure(error_message)
+            except Exception:
+                pass
         upstream.close()
 
     if error_message:
@@ -342,10 +434,11 @@ def chat_completions() -> Response:
             resp.headers.setdefault(k, v)
         return resp
 
-    message: Dict[str, Any] = {"role": "assistant", "content": full_text if full_text else None}
     if tool_calls:
-        message["tool_calls"] = tool_calls
-    message = apply_reasoning_to_message(message, reasoning_summary_text, reasoning_full_text, reasoning_compat)
+        message = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+    else:
+        message = {"role": "assistant", "content": full_text if full_text else None}
+        message = apply_reasoning_to_message(message, reasoning_summary_text, reasoning_full_text, reasoning_compat)
     completion = {
         "id": response_id or "chatcmpl",
         "object": "chat.completion",
@@ -355,14 +448,20 @@ def chat_completions() -> Response:
             {
                 "index": 0,
                 "message": message,
-                "finish_reason": "stop",
+                "finish_reason": "tool_calls" if tool_calls else "stop",
             }
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
+    if observed_service_tier:
+        completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/chat/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
+    if service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+    if observed_service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -406,6 +505,7 @@ def completions() -> Response:
 
     model_reasoning = extract_reasoning_from_model_name(requested_model)
     reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+    service_tier = _resolve_service_tier(payload, requested_model)
     reasoning_param = build_reasoning_param(
         reasoning_effort,
         reasoning_summary,
@@ -417,6 +517,7 @@ def completions() -> Response:
         input_items,
         instructions=_instructions_for_model(model),
         reasoning_param=reasoning_param,
+        service_tier=service_tier,
     )
     if error_resp is not None:
         if verbose:
@@ -463,6 +564,8 @@ def completions() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+        if service_tier:
+            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -470,6 +573,8 @@ def completions() -> Response:
     full_text = ""
     response_id = "cmpl"
     usage_obj: Dict[str, int] | None = None
+    observed_service_tier: str | None = None
+    completed_ok = False
     def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
         try:
             usage = (evt.get("response") or {}).get("usage")
@@ -499,6 +604,8 @@ def completions() -> Response:
                 continue
             if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
                 response_id = evt["response"].get("id") or response_id
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
             mu = _extract_usage(evt)
             if mu:
                 usage_obj = mu
@@ -506,8 +613,14 @@ def completions() -> Response:
             if kind == "response.output_text.delta":
                 full_text += evt.get("delta") or ""
             elif kind == "response.completed":
+                completed_ok = True
                 break
     finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
         upstream.close()
 
     completion = {
@@ -520,9 +633,15 @@ def completions() -> Response:
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
+    if observed_service_tier:
+        completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
+    if service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+    if observed_service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -531,7 +650,25 @@ def completions() -> Response:
 @openai_bp.route("/v1/models", methods=["GET"])
 def list_models() -> Response:
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
-    model_ids = list_public_model_ids(expose_variants)
+    model_groups = [
+        ("gpt-5", ["high", "medium", "low", "minimal"]),
+        ("gpt-5.1", ["high", "medium", "low"]),
+        ("gpt-5.2", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5.4", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5.4-fast", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5.3-codex", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5-codex", ["high", "medium", "low"]),
+        ("gpt-5.2-codex", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5.1-codex", ["high", "medium", "low"]),
+        ("gpt-5.1-codex-max", ["xhigh", "high", "medium", "low"]),
+        ("gpt-5.1-codex-mini", []),
+        ("codex-mini", []),
+    ]
+    model_ids: List[str] = []
+    for base, efforts in model_groups:
+        model_ids.append(base)
+        if expose_variants:
+            model_ids.extend([f"{base}-{effort}" for effort in efforts])
     data = [{"id": mid, "object": "model", "owned_by": "owner"} for mid in model_ids]
     models = {"object": "list", "data": data}
     resp = make_response(jsonify(models), 200)

@@ -9,7 +9,7 @@ import webbrowser
 from datetime import datetime
 
 from .app import create_app
-from .config import CLIENT_ID_DEFAULT
+from .config import CLIENT_ID_DEFAULT, CODEX_APP_SERVER_URL_DEFAULT, UPSTREAM_MODE_DEFAULT
 from .limits import RateLimitWindow, compute_reset_at, load_rate_limit_snapshot
 from .oauth import OAuthHTTPServer, OAuthHandler, REQUIRED_PORT, URL_BASE
 from .utils import eprint, get_home_dir, load_chatgpt_tokens, parse_jwt_claims, read_auth_file
@@ -270,6 +270,9 @@ def cmd_serve(
     debug_model: str | None,
     expose_reasoning_models: bool,
     default_web_search: bool,
+    service_tier: str | None,
+    upstream_mode: str,
+    codex_app_server_url: str,
 ) -> int:
     app = create_app(
         verbose=verbose,
@@ -280,6 +283,9 @@ def cmd_serve(
         debug_model=debug_model,
         expose_reasoning_models=expose_reasoning_models,
         default_web_search=default_web_search,
+        service_tier=service_tier,
+        upstream_mode=upstream_mode,
+        codex_app_server_url=codex_app_server_url,
     )
 
     app.run(host=host, debug=False, use_reloader=False, port=port, threaded=True)
@@ -348,6 +354,32 @@ def main() -> None:
             "Also configurable via CHATGPT_LOCAL_ENABLE_WEB_SEARCH."
         ),
     )
+    p_serve.add_argument(
+        "--upstream",
+        choices=["chatgpt-backend", "codex-app-server"],
+        default=(os.getenv("CHATGPT_LOCAL_UPSTREAM") or UPSTREAM_MODE_DEFAULT).strip().lower(),
+        help=(
+            "Select the upstream provider. "
+            "'chatgpt-backend' uses chatgpt.com/backend-api/codex/responses. "
+            "'codex-app-server' uses a local Codex app-server WebSocket."
+        ),
+    )
+    p_serve.add_argument(
+        "--codex-app-server-url",
+        dest="codex_app_server_url",
+        default=(os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL") or CODEX_APP_SERVER_URL_DEFAULT).strip(),
+        help="WebSocket URL for the local Codex app-server (default: ws://127.0.0.1:8787).",
+    )
+    p_serve.add_argument(
+        "--service-tier",
+        dest="service_tier",
+        default=(os.getenv("CHATGPT_LOCAL_SERVICE_TIER") or "").strip() or None,
+        help=(
+            "Optional service tier override. "
+            "Use 'fast' or 'flex' with codex-app-server, or 'priority' with chatgpt-backend. "
+            "Omit to leave unset."
+        ),
+    )
 
     p_info = sub.add_parser("info", help="Print current stored tokens and derived account id")
     p_info.add_argument("--json", action="store_true", help="Output raw auth.json contents")
@@ -369,6 +401,9 @@ def main() -> None:
                 debug_model=args.debug_model,
                 expose_reasoning_models=args.expose_reasoning_models,
                 default_web_search=args.enable_web_search,
+                service_tier=args.service_tier,
+                upstream_mode=args.upstream,
+                codex_app_server_url=args.codex_app_server_url,
             )
         )
     elif args.command == "info":
