@@ -1,0 +1,344 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChatMock 控制台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=IBM+Plex+Mono:wght@400;500;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/dashboard/styles.css" />
+  </head>
+  <body>
+    <div class="bg-mesh" aria-hidden="true"></div>
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div>
+        <p class="kicker">CHATMOCK / MULTI ACCOUNT</p>
+        <h1>ChatMock 轮询控制台</h1>
+      </div>
+      <div class="topbar-side">
+        <div class="dashboard-auth">
+          <input id="dashboard-token" type="password" placeholder="dashboard admin token" />
+          <button id="btn-dashboard-token-save" class="btn">Save Token</button>
+          <button id="btn-dashboard-token-clear" class="btn">Clear</button>
+        </div>
+        <p class="hint" id="dashboard-auth-hint">dashboard auth: not checked</p>
+        <div class="status-chip" id="service-chip">CHECKING...</div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel panel-wide">
+        <h2>运行状态</h2>
+        <div class="metrics">
+          <article class="metric-card">
+            <p class="metric-label">服务状态</p>
+            <p class="metric-value" id="metric-service">-</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">监听状态</p>
+            <p class="metric-value" id="metric-port">-</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">模型数量</p>
+            <p class="metric-value" id="metric-models">-</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">账号数量</p>
+            <p class="metric-value" id="metric-auths">-</p>
+          </article>
+        </div>
+        <p class="hint" id="health-hint">最近检查：-</p>
+      </section>
+
+      <section class="panel">
+        <h2>运维操作</h2>
+        <div class="action-grid">
+          <button id="btn-refresh" class="btn btn-main">刷新总览</button>
+          <button id="btn-sync" class="btn">同步账号</button>
+          <button id="btn-restart" class="btn">重启服务</button>
+          <button id="btn-start" class="btn">启动服务</button>
+          <button id="btn-stop" class="btn btn-danger">停止服务</button>
+          <button id="btn-models" class="btn">刷新模型</button>
+          <button id="btn-logs" class="btn">刷新日志</button>
+          <button id="btn-config" class="btn">刷新配置</button>
+        </div>
+        <div class="upload-auth-wrap">
+          <p class="upload-auth-title">上传 auth.json（支持多选）</p>
+          <input id="auth-files" class="upload-auth-input" type="file" accept=".json,application/json" multiple />
+          <label class="upload-auth-replace">
+            <input id="auth-replace" type="checkbox" />
+            Replace existing account pool
+          </label>
+          <p class="hint">
+            Uploaded credentials start managed Codex fast instances and remain in the multi-account pool for backend
+            rotation.
+          </p>
+          <button id="btn-upload-auth" class="btn btn-main">Upload Credentials</button>
+        </div>
+        <pre id="ops-output" class="output-box">等待操作...</pre>
+      </section>
+
+      <section class="panel">
+        <h2>启动参数</h2>
+        <div class="settings-grid">
+          <label class="setting-field">
+            <span>Routing Strategy</span>
+            <select id="set-routing-strategy">
+              <option value="round-robin">round-robin</option>
+              <option value="random">random</option>
+              <option value="first">first</option>
+            </select>
+          </label>
+          <label class="setting-field">
+            <span>Request Retry</span>
+            <input id="set-request-retry" type="number" min="0" max="10" />
+          </label>
+          <label class="setting-field">
+            <span>Max Retry Interval (s)</span>
+            <input id="set-max-retry-interval" type="number" min="1" max="300" />
+          </label>
+          <label class="setting-field">
+            <span>Reasoning Effort</span>
+            <select id="set-reasoning-effort">
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+            </select>
+          </label>
+          <label class="setting-field">
+            <span>Reasoning Summary</span>
+            <select id="set-reasoning-summary">
+              <option value="auto">auto</option>
+              <option value="concise">concise</option>
+              <option value="detailed">detailed</option>
+              <option value="none">none</option>
+            </select>
+          </label>
+          <label class="setting-field">
+            <span>Reasoning Compat</span>
+            <select id="set-reasoning-compat">
+              <option value="think-tags">think-tags</option>
+              <option value="legacy">legacy</option>
+              <option value="o3">o3</option>
+              <option value="current">current</option>
+            </select>
+          </label>
+          <label class="setting-field">
+            <span>HTTP_PROXY</span>
+            <input id="set-http-proxy" type="text" placeholder="http://127.0.0.1:7890" />
+          </label>
+          <label class="setting-field">
+            <span>HTTPS_PROXY</span>
+            <input id="set-https-proxy" type="text" placeholder="http://127.0.0.1:7890" />
+          </label>
+          <label class="setting-field">
+            <span>ALL_PROXY</span>
+            <input id="set-all-proxy" type="text" placeholder="socks5://127.0.0.1:7890" />
+          </label>
+          <label class="setting-field">
+            <span>NO_PROXY</span>
+            <input id="set-no-proxy" type="text" placeholder="127.0.0.1,localhost" />
+          </label>
+        </div>
+
+        <div class="toggle-grid">
+          <label class="toggle-item"><input id="set-expose-reasoning-models" type="checkbox" /> Expose reasoning models</label>
+          <label class="toggle-item"><input id="set-enable-web-search" type="checkbox" /> Enable web search by default</label>
+          <label class="toggle-item"><input id="set-verbose" type="checkbox" /> Verbose</label>
+          <label class="toggle-item"><input id="set-verbose-obfuscation" type="checkbox" /> Verbose obfuscation</label>
+        </div>
+
+        <p class="hint" id="settings-save-hint">自动保存：等待更改</p>
+        <p class="hint">settings file: <span id="settings-path">-</span></p>
+      </section>
+
+      <section class="panel panel-wide">
+        <div class="panel-head">
+          <h2>Gateway 渠道</h2>
+          <div class="inline-actions">
+            <button id="btn-gateway-reload" class="btn">重新加载</button>
+            <button id="btn-gateway-save" class="btn btn-main">保存渠道配置</button>
+          </div>
+        </div>
+        <label class="setting-field">
+          <span>Channels Path</span>
+          <input id="set-channels-path" type="text" placeholder="/app/storage/gateway.channels.json" />
+        </label>
+        <p class="hint" id="gateway-summary">加载中...</p>
+        <textarea id="gateway-config" class="json-editor" spellcheck="false">加载中...</textarea>
+        <div class="gateway-status-head">
+          <h3>渠道状态</h3>
+          <button id="btn-gateway-status" class="btn">刷新状态</button>
+        </div>
+        <div id="gateway-status-grid" class="gateway-status-grid"></div>
+      </section>
+
+      <section class="panel panel-wide">
+        <div class="panel-head">
+          <h2>Control Plane</h2>
+          <div class="inline-actions">
+            <button id="btn-admin-refresh" class="btn">刷新控制台数据</button>
+          </div>
+        </div>
+        <p class="hint">sqlite db: <span id="admin-db-path">-</span></p>
+      </section>
+
+      <section class="panel">
+        <h2>Users</h2>
+        <input id="admin-user-id" type="hidden" />
+        <div class="admin-form-grid">
+          <label class="setting-field">
+            <span>Name</span>
+            <input id="admin-user-name" type="text" placeholder="team-default" />
+          </label>
+          <label class="setting-field">
+            <span>Email</span>
+            <input id="admin-user-email" type="text" placeholder="ops@example.com" />
+          </label>
+          <label class="setting-field">
+            <span>Status</span>
+            <select id="admin-user-status">
+              <option value="active">active</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </label>
+          <label class="setting-field">
+            <span>Monthly Quota Tokens</span>
+            <input id="admin-user-quota" type="number" min="0" step="1" placeholder="0 = unlimited" />
+          </label>
+          <label class="setting-field">
+            <span>Prompt Price / 1M</span>
+            <input id="admin-user-prompt-price" type="number" min="0" step="0.000001" placeholder="0" />
+          </label>
+          <label class="setting-field">
+            <span>Completion Price / 1M</span>
+            <input id="admin-user-completion-price" type="number" min="0" step="0.000001" placeholder="0" />
+          </label>
+        </div>
+        <div class="inline-actions admin-actions">
+          <button id="btn-user-save" class="btn btn-main">保存用户</button>
+          <button id="btn-user-new" class="btn">新建表单</button>
+        </div>
+        <div id="admin-users-grid" class="admin-grid"></div>
+      </section>
+
+      <section class="panel">
+        <h2>API Keys</h2>
+        <input id="admin-key-id" type="hidden" />
+        <div class="admin-form-grid">
+          <label class="setting-field">
+            <span>User</span>
+            <select id="admin-key-user-id"></select>
+          </label>
+          <label class="setting-field">
+            <span>Key Name</span>
+            <input id="admin-key-name" type="text" placeholder="default" />
+          </label>
+          <label class="setting-field">
+            <span>Status</span>
+            <select id="admin-key-status">
+              <option value="active">active</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </label>
+          <label class="setting-field">
+            <span>Token (optional)</span>
+            <input id="admin-key-token" type="text" placeholder="leave blank to auto-generate" />
+          </label>
+          <label class="setting-field">
+            <span>Groups</span>
+            <input id="admin-key-groups" type="text" placeholder="default,fast" />
+          </label>
+          <label class="setting-field">
+            <span>Models</span>
+            <input id="admin-key-models" type="text" placeholder="*,gpt-5.4-fast*" />
+          </label>
+          <label class="setting-field">
+            <span>Expires At (UTC ISO)</span>
+            <input id="admin-key-expires-at" type="text" placeholder="2026-12-31T23:59:59+00:00" />
+          </label>
+        </div>
+        <div class="inline-actions admin-actions">
+          <button id="btn-key-save" class="btn btn-main">保存 Key</button>
+          <button id="btn-key-new" class="btn">新建表单</button>
+        </div>
+        <div id="admin-keys-grid" class="admin-grid"></div>
+      </section>
+
+      <section class="panel panel-wide">
+        <h2>Usage / Billing</h2>
+        <p class="hint" id="admin-usage-window">统计窗口：-</p>
+        <div class="usage-summary-grid">
+          <article class="metric-card">
+            <p class="metric-label">Prompt Tokens</p>
+            <p class="metric-value" id="admin-usage-prompt">-</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">Completion Tokens</p>
+            <p class="metric-value" id="admin-usage-completion">-</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">Total Tokens</p>
+            <p class="metric-value" id="admin-usage-total">-</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">Estimated Cost</p>
+            <p class="metric-value" id="admin-usage-cost">-</p>
+          </article>
+        </div>
+        <div class="config-wrap">
+          <div>
+            <h3>By User</h3>
+            <div id="admin-usage-users" class="admin-grid"></div>
+          </div>
+          <div>
+            <h3>By Key</h3>
+            <div id="admin-usage-keys" class="admin-grid"></div>
+          </div>
+        </div>
+        <h3>Recent Events</h3>
+        <pre id="admin-usage-events" class="output-box">加载中...</pre>
+      </section>
+
+      <section class="panel">
+        <h2>账号池</h2>
+        <div id="accounts-grid" class="accounts-grid"></div>
+      </section>
+
+      <section class="panel">
+        <h2>模型列表</h2>
+        <div id="models-grid" class="model-grid"></div>
+      </section>
+
+      <section class="panel panel-wide">
+        <h2>配置快照</h2>
+        <div class="config-wrap">
+          <div>
+            <h3>本地配置</h3>
+            <pre id="local-config" class="code-box">加载中...</pre>
+          </div>
+          <div>
+            <h3>运行配置</h3>
+            <pre id="active-config" class="code-box">加载中...</pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel panel-wide">
+        <h2>日志尾部</h2>
+        <pre id="logs-box" class="log-box">加载中...</pre>
+      </section>
+    </main>
+
+    <div id="toast" class="toast"></div>
+    <script src="/dashboard/app.js" defer></script>
+  </body>
+</html>
