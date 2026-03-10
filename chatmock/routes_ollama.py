@@ -8,8 +8,6 @@ from typing import Any, Dict, List
 from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
-from .control_plane import get_control_plane_manager
-from .gateway import get_gateway_manager
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
 from .reasoning import (
@@ -20,7 +18,7 @@ from .reasoning import (
 )
 from .transform import convert_ollama_messages, normalize_ollama_tools
 from .upstream import normalize_model_name, start_upstream_request
-from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses, get_request_retry_limit
+from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses
 
 
 ollama_bp = Blueprint("ollama", __name__)
@@ -54,64 +52,6 @@ def _wrap_stream_logging(label: str, iterator, enabled: bool):
             yield chunk
 
     return _gen()
-
-
-def _upstream_channel_id(upstream: Any) -> str:
-    return str(getattr(upstream, "channel_id", "") or "")
-
-
-def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-    try:
-        usage = (evt.get("response") or {}).get("usage")
-        if not isinstance(usage, dict):
-            return None
-        prompt_tokens = int(usage.get("input_tokens") or 0)
-        completion_tokens = int(usage.get("output_tokens") or 0)
-        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
-        return {
-            "input_tokens": prompt_tokens,
-            "output_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
-    except Exception:
-        return None
-
-
-def _ollama_eval_metrics(usage: Dict[str, int] | None) -> Dict[str, int]:
-    metrics = dict(_OLLAMA_FAKE_EVAL)
-    if isinstance(usage, dict):
-        metrics["prompt_eval_count"] = int(usage.get("input_tokens") or metrics["prompt_eval_count"])
-        metrics["eval_count"] = int(usage.get("output_tokens") or metrics["eval_count"])
-    return metrics
-
-
-def _record_control_plane_usage(
-    *,
-    endpoint: str,
-    model: str,
-    prompt_tokens: int,
-    completion_tokens: int,
-    total_tokens: int,
-    status_code: int,
-    request_id: str = "",
-    channel_id: str = "",
-) -> None:
-    manager = get_control_plane_manager()
-    if manager is None:
-        return
-    try:
-        manager.record_usage(
-            endpoint=endpoint,
-            model=model,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            status_code=status_code,
-            request_id=request_id,
-            channel_id=channel_id,
-        )
-    except Exception:
-        pass
 
 
 @ollama_bp.route("/api/version", methods=["GET"])
@@ -158,107 +98,6 @@ def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None =
     return None
 
 
-def _gateway_is_retryable_status(status_code: int) -> bool:
-    return status_code in (408, 429) or 500 <= status_code <= 599
-
-
-def _gateway_error_response(message: str, status: int = 503) -> Response:
-    resp = make_response(jsonify({"error": message}), status)
-    for k, v in build_cors_headers().items():
-        resp.headers.setdefault(k, v)
-    return resp
-
-
-def _gateway_response_message(response: Response) -> str:
-    try:
-        body = response.get_data(as_text=True)
-        parsed = json.loads(body) if body else {}
-        if isinstance(parsed, dict):
-            error = parsed.get("error")
-            if isinstance(error, dict):
-                return str(error.get("message") or body or "gateway error")
-            if isinstance(error, str):
-                return error or "gateway error"
-        return body or "gateway error"
-    except Exception:
-        return "gateway error"
-
-
-def _resolve_gateway_upstream(
-    *,
-    payload: Dict[str, Any],
-    gateway_model: str,
-    start_kwargs: Dict[str, Any],
-) -> tuple[Response | None, Any | None, Response | None]:
-    manager = get_gateway_manager()
-    if manager is None or not manager.is_enabled():
-        return None, None, None
-
-    group = manager.requested_group(payload)
-    channels = manager.ordered_channels("ollama", gateway_model or "*", group)
-    if not channels:
-        return None, None, _gateway_error_response(
-            f"No gateway channel matches model '{gateway_model or '*'}' in group '{group}'",
-            503,
-        )
-
-    max_attempts = max(1, min(len(channels), get_request_retry_limit() + 1))
-    last_error: Response | None = None
-
-    for index, channel in enumerate(channels[:max_attempts]):
-        is_last_attempt = index >= (max_attempts - 1)
-        if channel.transport not in ("chatgpt-backend", "codex-app-server"):
-            last_error = _gateway_error_response(
-                f"Unsupported gateway transport '{channel.transport}' on channel '{channel.id}'. "
-                "Gateway mode keeps ChatMock as the proxy core; use chatgpt-backend or codex-app-server.",
-                500,
-            )
-            if not is_last_attempt:
-                continue
-            return None, None, last_error
-
-        upstream, error_resp = start_upstream_request(gateway_channel=channel, **start_kwargs)
-        if error_resp is not None:
-            status = int(getattr(error_resp, "status_code", 502) or 502)
-            if _gateway_is_retryable_status(status):
-                manager.mark_channel_result(
-                    channel.id,
-                    success=False,
-                    status_code=status,
-                    error_message=_gateway_response_message(error_resp),
-                )
-                if not is_last_attempt:
-                    continue
-            return None, None, error_resp
-
-        if upstream is None:
-            last_error = _gateway_error_response(
-                f"Gateway channel '{channel.id}' did not return an upstream response",
-                502,
-            )
-            if not is_last_attempt:
-                continue
-            return None, None, last_error
-
-        status = int(getattr(upstream, "status_code", 0) or 0)
-        if _gateway_is_retryable_status(status):
-            manager.mark_channel_result(
-                channel.id,
-                success=False,
-                status_code=status,
-                error_message=f"retryable status {status}",
-            )
-            if not is_last_attempt:
-                try:
-                    upstream.close()
-                except Exception:
-                    pass
-                continue
-        return None, upstream, None
-
-    return None, None, last_error or _gateway_error_response("No gateway channel is available", 503)
-
-
 _OLLAMA_FAKE_EVAL = {
     "total_duration": 8497226791,
     "load_duration": 1747193958,
@@ -274,67 +113,62 @@ def ollama_tags() -> Response:
     if bool(current_app.config.get("VERBOSE")):
         print("IN GET /api/tags")
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
-    gateway_manager = get_gateway_manager()
-    model_ids: List[str] = []
-    if gateway_manager is not None and gateway_manager.is_enabled():
-        model_ids = gateway_manager.list_public_models("ollama", gateway_manager.requested_group())
-    if not model_ids:
-        model_ids = [
-            "gpt-5",
-            "gpt-5.1",
-            "gpt-5.2",
-            "gpt-5.4",
-            "gpt-5.4-fast",
-            "gpt-5.3-codex",
-            "gpt-5-codex",
-            "gpt-5.2-codex",
-            "gpt-5.1-codex",
-            "gpt-5.1-codex-max",
-            "gpt-5.1-codex-mini",
-            "codex-mini",
-        ]
-        if expose_variants:
-            model_ids.extend(
-                [
-                    "gpt-5-high",
-                    "gpt-5-medium",
-                    "gpt-5-low",
-                    "gpt-5-minimal",
-                    "gpt-5.1-high",
-                    "gpt-5.1-medium",
-                    "gpt-5.1-low",
-                    "gpt-5.2-xhigh",
-                    "gpt-5.2-high",
-                    "gpt-5.2-medium",
-                    "gpt-5.2-low",
-                    "gpt-5.4-xhigh",
-                    "gpt-5.4-high",
-                    "gpt-5.4-medium",
-                    "gpt-5.4-low",
-                    "gpt-5.4-fast-xhigh",
-                    "gpt-5.4-fast-high",
-                    "gpt-5.4-fast-medium",
-                    "gpt-5.4-fast-low",
-                    "gpt-5-codex-high",
-                    "gpt-5-codex-medium",
-                    "gpt-5-codex-low",
-                    "gpt-5.2-codex-xhigh",
-                    "gpt-5.2-codex-high",
-                    "gpt-5.2-codex-medium",
-                    "gpt-5.2-codex-low",
-                    "gpt-5.3-codex-xhigh",
-                    "gpt-5.3-codex-high",
-                    "gpt-5.3-codex-medium",
-                    "gpt-5.3-codex-low",
-                    "gpt-5.1-codex-high",
-                    "gpt-5.1-codex-medium",
-                    "gpt-5.1-codex-low",
-                    "gpt-5.1-codex-max-xhigh",
-                    "gpt-5.1-codex-max-high",
-                    "gpt-5.1-codex-max-medium",
-                    "gpt-5.1-codex-max-low",
-                ]
-            )
+    model_ids = [
+        "gpt-5",
+        "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.4",
+        "gpt-5.4-fast",
+        "gpt-5.3-codex",
+        "gpt-5-codex",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "codex-mini",
+    ]
+    if expose_variants:
+        model_ids.extend(
+            [
+                "gpt-5-high",
+                "gpt-5-medium",
+                "gpt-5-low",
+                "gpt-5-minimal",
+                "gpt-5.1-high",
+                "gpt-5.1-medium",
+                "gpt-5.1-low",
+                "gpt-5.2-xhigh",
+                "gpt-5.2-high",
+                "gpt-5.2-medium",
+                "gpt-5.2-low",
+                "gpt-5.4-xhigh",
+                "gpt-5.4-high",
+                "gpt-5.4-medium",
+                "gpt-5.4-low",
+                "gpt-5.4-fast-xhigh",
+                "gpt-5.4-fast-high",
+                "gpt-5.4-fast-medium",
+                "gpt-5.4-fast-low",
+                "gpt-5-codex-high",
+                "gpt-5-codex-medium",
+                "gpt-5-codex-low",
+                "gpt-5.2-codex-xhigh",
+                "gpt-5.2-codex-high",
+                "gpt-5.2-codex-medium",
+                "gpt-5.2-codex-low",
+                "gpt-5.3-codex-xhigh",
+                "gpt-5.3-codex-high",
+                "gpt-5.3-codex-medium",
+                "gpt-5.3-codex-low",
+                "gpt-5.1-codex-high",
+                "gpt-5.1-codex-medium",
+                "gpt-5.1-codex-low",
+                "gpt-5.1-codex-max-xhigh",
+                "gpt-5.1-codex-max-high",
+                "gpt-5.1-codex-max-medium",
+                "gpt-5.1-codex-max-low",
+            ]
+        )
     models = []
     for model_id in model_ids:
         models.append(
@@ -404,346 +238,6 @@ def ollama_show() -> Response:
     if verbose:
         _log_json("OUT POST /api/show", v1_show_response)
     resp = make_response(jsonify(v1_show_response), 200)
-    for k, v in build_cors_headers().items():
-        resp.headers.setdefault(k, v)
-    return resp
-
-
-@ollama_bp.route("/api/generate", methods=["POST"])
-def ollama_generate() -> Response:
-    verbose = bool(current_app.config.get("VERBOSE"))
-    reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
-    reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
-
-    try:
-        raw = request.get_data(cache=True, as_text=True) or ""
-        if verbose:
-            print("IN POST /api/generate\n" + (raw if isinstance(raw, str) else ""))
-        payload = json.loads(raw) if raw else {}
-    except Exception:
-        err = {"error": "Invalid JSON body"}
-        if verbose:
-            _log_json("OUT POST /api/generate", err)
-        return jsonify(err), 400
-
-    model = payload.get("model")
-    prompt = payload.get("prompt")
-    if isinstance(prompt, list):
-        prompt = "".join([item if isinstance(item, str) else "" for item in prompt])
-    if not isinstance(prompt, str) or not prompt.strip():
-        err = {"error": "prompt must be a non-empty string"}
-        if verbose:
-            _log_json("OUT POST /api/generate", err)
-        return jsonify(err), 400
-
-    messages: List[Dict[str, Any]] = []
-    system_prompt = payload.get("system")
-    if isinstance(system_prompt, str) and system_prompt.strip():
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-    messages = convert_ollama_messages(
-        messages,
-        payload.get("images") if isinstance(payload.get("images"), list) else None,
-    )
-    if isinstance(messages, list):
-        sys_idx = next((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "system"), None)
-        if isinstance(sys_idx, int):
-            sys_msg = messages.pop(sys_idx)
-            content = sys_msg.get("content") if isinstance(sys_msg, dict) else ""
-            messages.insert(0, {"role": "user", "content": content})
-
-    stream_req = payload.get("stream")
-    if stream_req is None:
-        stream_req = True
-    stream_req = bool(stream_req)
-
-    if not isinstance(model, str) or not isinstance(messages, list) or not messages:
-        err = {"error": "Invalid request format"}
-        if verbose:
-            _log_json("OUT POST /api/generate", err)
-        return jsonify(err), 400
-
-    input_items = convert_chat_messages_to_responses_input(messages)
-    model_reasoning = extract_reasoning_from_model_name(model)
-    normalized_model = normalize_model_name(model)
-    service_tier = _resolve_service_tier(payload, model)
-    reasoning_param = build_reasoning_param(
-        reasoning_effort,
-        reasoning_summary,
-        model_reasoning,
-        allowed_efforts=allowed_efforts_for_model(model),
-    )
-    proxy_resp, upstream, error_resp = _resolve_gateway_upstream(
-        payload=payload,
-        gateway_model=model,
-        start_kwargs={
-            "model": normalized_model,
-            "input_items": input_items,
-            "instructions": _instructions_for_model(normalized_model),
-            "reasoning_param": reasoning_param,
-            "service_tier": service_tier,
-        },
-    )
-    if proxy_resp is not None:
-        return proxy_resp
-    if upstream is None and error_resp is None:
-        upstream, error_resp = start_upstream_request(
-            normalized_model,
-            input_items,
-            instructions=_instructions_for_model(normalized_model),
-            reasoning_param=reasoning_param,
-            service_tier=service_tier,
-        )
-    if error_resp is not None:
-        if verbose:
-            try:
-                body = error_resp.get_data(as_text=True)
-                if body:
-                    try:
-                        parsed = json.loads(body)
-                    except Exception:
-                        parsed = body
-                    _log_json("OUT POST /api/generate", parsed)
-            except Exception:
-                pass
-        return error_resp
-
-    record_rate_limits_from_response(upstream)
-
-    if upstream.status_code >= 400:
-        try:
-            err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
-        except Exception:
-            err_body = {"raw": upstream.text}
-        err = {"error": (err_body.get("error", {}) or {}).get("message", "Upstream error")}
-        if verbose:
-            _log_json("OUT POST /api/generate", err)
-        return jsonify(err), upstream.status_code
-
-    created_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    model_out = model if isinstance(model, str) and model.strip() else normalized_model
-
-    if stream_req:
-        def _gen():
-            compat = (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower()
-            think_open = False
-            think_closed = False
-            saw_any_summary = False
-            pending_summary_paragraph = False
-            response_id = "gen"
-            usage_obj: Dict[str, int] | None = None
-            completed_recorded = False
-            try:
-                for raw_line in upstream.iter_lines(decode_unicode=False):
-                    if not raw_line:
-                        continue
-                    line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[len("data: "):].strip()
-                    if not data:
-                        continue
-                    if data == "[DONE]":
-                        break
-                    try:
-                        evt = json.loads(data)
-                    except Exception:
-                        continue
-                    if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                        response_id = evt["response"].get("id") or response_id
-                    current_usage = _extract_usage(evt)
-                    if current_usage:
-                        usage_obj = current_usage
-                    kind = evt.get("type")
-                    if kind == "response.reasoning_summary_part.added":
-                        if compat in ("think-tags", "o3"):
-                            if saw_any_summary:
-                                pending_summary_paragraph = True
-                            else:
-                                saw_any_summary = True
-                    elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-                        delta_txt = evt.get("delta") or ""
-                        if compat == "o3":
-                            if kind == "response.reasoning_summary_text.delta" and pending_summary_paragraph:
-                                yield json.dumps({"model": model_out, "created_at": created_at, "response": "\n", "done": False}) + "\n"
-                                pending_summary_paragraph = False
-                            if delta_txt:
-                                yield json.dumps({"model": model_out, "created_at": created_at, "response": delta_txt, "done": False}) + "\n"
-                        elif compat == "think-tags":
-                            if not think_open and not think_closed:
-                                yield json.dumps({"model": model_out, "created_at": created_at, "response": "<think>", "done": False}) + "\n"
-                                think_open = True
-                            if think_open and not think_closed:
-                                if kind == "response.reasoning_summary_text.delta" and pending_summary_paragraph:
-                                    yield json.dumps({"model": model_out, "created_at": created_at, "response": "\n", "done": False}) + "\n"
-                                    pending_summary_paragraph = False
-                                if delta_txt:
-                                    yield json.dumps({"model": model_out, "created_at": created_at, "response": delta_txt, "done": False}) + "\n"
-                    elif kind == "response.output_text.delta":
-                        delta = evt.get("delta") or ""
-                        if compat == "think-tags" and think_open and not think_closed:
-                            yield json.dumps({"model": model_out, "created_at": created_at, "response": "</think>", "done": False}) + "\n"
-                            think_open = False
-                            think_closed = True
-                        if delta:
-                            yield json.dumps({"model": model_out, "created_at": created_at, "response": delta, "done": False}) + "\n"
-                    elif kind == "response.completed":
-                        if usage_obj:
-                            _record_control_plane_usage(
-                                endpoint="/api/generate",
-                                model=model_out,
-                                prompt_tokens=int(usage_obj.get("input_tokens") or 0),
-                                completion_tokens=int(usage_obj.get("output_tokens") or 0),
-                                total_tokens=int(usage_obj.get("total_tokens") or 0),
-                                status_code=int(upstream.status_code or 200),
-                                request_id=response_id,
-                                channel_id=_upstream_channel_id(upstream),
-                            )
-                            completed_recorded = True
-                        break
-            finally:
-                if not completed_recorded and usage_obj:
-                    _record_control_plane_usage(
-                        endpoint="/api/generate",
-                        model=model_out,
-                        prompt_tokens=int(usage_obj.get("input_tokens") or 0),
-                        completion_tokens=int(usage_obj.get("output_tokens") or 0),
-                        total_tokens=int(usage_obj.get("total_tokens") or 0),
-                        status_code=int(upstream.status_code or 200),
-                        request_id=response_id,
-                        channel_id=_upstream_channel_id(upstream),
-                    )
-                upstream.close()
-                if compat == "think-tags" and think_open and not think_closed:
-                    yield json.dumps({"model": model_out, "created_at": created_at, "response": "</think>", "done": False}) + "\n"
-                done_obj = {
-                    "model": model_out,
-                    "created_at": created_at,
-                    "response": "",
-                    "done": True,
-                    "done_reason": "stop",
-                }
-                done_obj.update(_ollama_eval_metrics(usage_obj))
-                yield json.dumps(done_obj) + "\n"
-
-        if verbose:
-            print("OUT POST /api/generate (streaming response)")
-        stream_iter = stream_with_context(_gen())
-        stream_iter = _wrap_stream_logging("STREAM OUT /api/generate", stream_iter, verbose)
-        resp = current_app.response_class(
-            stream_iter,
-            status=200,
-            mimetype="application/x-ndjson",
-        )
-        if service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-        for k, v in build_cors_headers().items():
-            resp.headers.setdefault(k, v)
-        return resp
-
-    full_text = ""
-    reasoning_summary_text = ""
-    reasoning_full_text = ""
-    observed_service_tier: str | None = None
-    error_message: str | None = None
-    response_id = "gen"
-    usage_obj: Dict[str, int] | None = None
-    completed_ok = False
-    try:
-        for raw_line in upstream.iter_lines(decode_unicode=False):
-            if not raw_line:
-                continue
-            line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
-            if not line.startswith("data: "):
-                continue
-            data = line[len("data: "):].strip()
-            if not data:
-                continue
-            if data == "[DONE]":
-                break
-            try:
-                evt = json.loads(data)
-            except Exception:
-                continue
-            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                response_id = evt["response"].get("id") or response_id
-            current_usage = _extract_usage(evt)
-            if current_usage:
-                usage_obj = current_usage
-            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
-                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
-            kind = evt.get("type")
-            if kind == "response.output_text.delta":
-                full_text += evt.get("delta") or ""
-            elif kind == "response.reasoning_summary_text.delta":
-                reasoning_summary_text += evt.get("delta") or ""
-            elif kind == "response.reasoning_text.delta":
-                reasoning_full_text += evt.get("delta") or ""
-            elif kind == "response.failed":
-                error_message = evt.get("response", {}).get("error", {}).get("message", "response.failed")
-            elif kind == "response.completed":
-                completed_ok = True
-                break
-    finally:
-        if completed_ok and hasattr(upstream, "mark_success"):
-            try:
-                upstream.mark_success()
-            except Exception:
-                pass
-        elif error_message and hasattr(upstream, "mark_failure"):
-            try:
-                upstream.mark_failure(error_message)
-            except Exception:
-                pass
-        upstream.close()
-
-    if error_message:
-        err = {"error": error_message}
-        if verbose:
-            _log_json("OUT POST /api/generate", err)
-        resp = make_response(jsonify(err), 502)
-        for k, v in build_cors_headers().items():
-            resp.headers.setdefault(k, v)
-        return resp
-
-    if (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower() == "think-tags":
-        rtxt_parts = []
-        if isinstance(reasoning_summary_text, str) and reasoning_summary_text.strip():
-            rtxt_parts.append(reasoning_summary_text)
-        if isinstance(reasoning_full_text, str) and reasoning_full_text.strip():
-            rtxt_parts.append(reasoning_full_text)
-        rtxt = "\n\n".join([part for part in rtxt_parts if part])
-        if rtxt:
-            full_text = f"<think>{rtxt}</think>" + (full_text or "")
-
-    out_json = {
-        "model": model_out,
-        "created_at": created_at,
-        "response": full_text,
-        "done": True,
-        "done_reason": "stop",
-    }
-    if observed_service_tier:
-        out_json["service_tier"] = observed_service_tier
-    out_json.update(_ollama_eval_metrics(usage_obj))
-    if verbose:
-        _log_json("OUT POST /api/generate", out_json)
-    if usage_obj:
-        _record_control_plane_usage(
-            endpoint="/api/generate",
-            model=model_out,
-            prompt_tokens=int(usage_obj.get("input_tokens") or 0),
-            completion_tokens=int(usage_obj.get("output_tokens") or 0),
-            total_tokens=int(usage_obj.get("total_tokens") or 0),
-            status_code=int(upstream.status_code or 200),
-            request_id=response_id,
-            channel_id=_upstream_channel_id(upstream),
-        )
-    resp = make_response(jsonify(out_json), 200)
-    if service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-    if observed_service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -835,39 +329,21 @@ def ollama_chat() -> Response:
     model_reasoning = extract_reasoning_from_model_name(model)
     normalized_model = normalize_model_name(model)
     service_tier = _resolve_service_tier(payload, model)
-    reasoning_param = build_reasoning_param(
-        reasoning_effort,
-        reasoning_summary,
-        model_reasoning,
-        allowed_efforts=allowed_efforts_for_model(model),
+    upstream, error_resp = start_upstream_request(
+        normalized_model,
+        input_items,
+        instructions=_instructions_for_model(normalized_model),
+        tools=tools_responses,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+        reasoning_param=build_reasoning_param(
+            reasoning_effort,
+            reasoning_summary,
+            model_reasoning,
+            allowed_efforts=allowed_efforts_for_model(model),
+        ),
+        service_tier=service_tier,
     )
-    proxy_resp, upstream, error_resp = _resolve_gateway_upstream(
-        payload=payload,
-        gateway_model=model,
-        start_kwargs={
-            "model": normalized_model,
-            "input_items": input_items,
-            "instructions": _instructions_for_model(normalized_model),
-            "tools": tools_responses,
-            "tool_choice": tool_choice,
-            "parallel_tool_calls": parallel_tool_calls,
-            "reasoning_param": reasoning_param,
-            "service_tier": service_tier,
-        },
-    )
-    if proxy_resp is not None:
-        return proxy_resp
-    if upstream is None and error_resp is None:
-        upstream, error_resp = start_upstream_request(
-            normalized_model,
-            input_items,
-            instructions=_instructions_for_model(normalized_model),
-            tools=tools_responses,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            reasoning_param=reasoning_param,
-            service_tier=service_tier,
-        )
     if error_resp is not None:
         if verbose:
             try:
@@ -894,33 +370,22 @@ def ollama_chat() -> Response:
                 print("[Passthrough] Upstream rejected tools; retrying without extras (args redacted)")
             base_tools_only = convert_tools_chat_to_responses(normalize_ollama_tools(tools_req))
             safe_choice = payload.get("tool_choice", "auto")
-            _, upstream2, err2 = _resolve_gateway_upstream(
-                payload=payload,
-                gateway_model=model,
-                start_kwargs={
-                    "model": normalize_model_name(model),
-                    "input_items": input_items,
-                    "instructions": BASE_INSTRUCTIONS,
-                    "tools": base_tools_only,
-                    "tool_choice": safe_choice,
-                    "parallel_tool_calls": parallel_tool_calls,
-                    "reasoning_param": reasoning_param,
-                    "service_tier": service_tier,
-                },
+            upstream2, err2 = start_upstream_request(
+                normalize_model_name(model),
+                input_items,
+                instructions=BASE_INSTRUCTIONS,
+                tools=base_tools_only,
+                tool_choice=safe_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                reasoning_param=build_reasoning_param(
+                    reasoning_effort,
+                    reasoning_summary,
+                    model_reasoning,
+                    allowed_efforts=allowed_efforts_for_model(model),
+                ),
+                service_tier=service_tier,
             )
-            if upstream2 is None and err2 is None:
-                upstream2, err2 = start_upstream_request(
-                    normalize_model_name(model),
-                    input_items,
-                    instructions=BASE_INSTRUCTIONS,
-                    tools=base_tools_only,
-                    tool_choice=safe_choice,
-                    parallel_tool_calls=parallel_tool_calls,
-                    reasoning_param=reasoning_param,
-                    service_tier=service_tier,
-                )
-            if upstream2 is not None:
-                record_rate_limits_from_response(upstream2)
+            record_rate_limits_from_response(upstream2)
             if err2 is None and upstream2 is not None and upstream2.status_code < 400:
                 upstream = upstream2
             else:
@@ -949,9 +414,6 @@ def ollama_chat() -> Response:
             full_parts: List[str] = []
             tool_calls_stream: List[Dict[str, Any]] = []
             done_reason = "stop"
-            response_id = "chatcmpl"
-            usage_obj: Dict[str, int] | None = None
-            completed_recorded = False
             try:
                 for raw_line in upstream.iter_lines(decode_unicode=False):
                     if not raw_line:
@@ -968,11 +430,6 @@ def ollama_chat() -> Response:
                         evt = json.loads(data)
                     except Exception:
                         continue
-                    if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                        response_id = evt["response"].get("id") or response_id
-                    current_usage = _extract_usage(evt)
-                    if current_usage:
-                        usage_obj = current_usage
                     kind = evt.get("type")
                     if kind == "response.reasoning_summary_part.added":
                         if compat in ("think-tags", "o3"):
@@ -1106,31 +563,8 @@ def ollama_chat() -> Response:
                                 )
                                 done_reason = "tool_calls"
                     elif kind == "response.completed":
-                        if usage_obj:
-                            _record_control_plane_usage(
-                                endpoint="/api/chat",
-                                model=model_out,
-                                prompt_tokens=int(usage_obj.get("input_tokens") or 0),
-                                completion_tokens=int(usage_obj.get("output_tokens") or 0),
-                                total_tokens=int(usage_obj.get("total_tokens") or 0),
-                                status_code=int(upstream.status_code or 200),
-                                request_id=response_id,
-                                channel_id=_upstream_channel_id(upstream),
-                            )
-                            completed_recorded = True
                         break
             finally:
-                if not completed_recorded and usage_obj:
-                    _record_control_plane_usage(
-                        endpoint="/api/chat",
-                        model=model_out,
-                        prompt_tokens=int(usage_obj.get("input_tokens") or 0),
-                        completion_tokens=int(usage_obj.get("output_tokens") or 0),
-                        total_tokens=int(usage_obj.get("total_tokens") or 0),
-                        status_code=int(upstream.status_code or 200),
-                        request_id=response_id,
-                        channel_id=_upstream_channel_id(upstream),
-                    )
                 upstream.close()
                 if compat == "think-tags" and think_open and not think_closed:
                     yield (
@@ -1156,7 +590,7 @@ def ollama_chat() -> Response:
                     "done": True,
                     "done_reason": done_reason,
                 }
-                done_obj.update(_ollama_eval_metrics(usage_obj))
+                done_obj.update(_OLLAMA_FAKE_EVAL)
                 yield json.dumps(done_obj) + "\n"
         if verbose:
             print("OUT POST /api/chat (streaming response)")
@@ -1178,9 +612,6 @@ def ollama_chat() -> Response:
     reasoning_full_text = ""
     tool_calls: List[Dict[str, Any]] = []
     observed_service_tier: str | None = None
-    error_message: str | None = None
-    response_id = "chatcmpl"
-    usage_obj: Dict[str, int] | None = None
     completed_ok = False
     try:
         for raw in upstream.iter_lines(decode_unicode=False):
@@ -1198,11 +629,6 @@ def ollama_chat() -> Response:
                 evt = json.loads(data)
             except Exception:
                 continue
-            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                response_id = evt["response"].get("id") or response_id
-            current_usage = _extract_usage(evt)
-            if current_usage:
-                usage_obj = current_usage
             if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
                 observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
             kind = evt.get("type")
@@ -1231,8 +657,6 @@ def ollama_chat() -> Response:
                                 "function": {"name": name, "arguments": args},
                             }
                         )
-            elif kind == "response.failed":
-                error_message = evt.get("response", {}).get("error", {}).get("message", "response.failed")
             elif kind == "response.completed":
                 completed_ok = True
                 break
@@ -1242,21 +666,7 @@ def ollama_chat() -> Response:
                 upstream.mark_success()
             except Exception:
                 pass
-        elif error_message and hasattr(upstream, "mark_failure"):
-            try:
-                upstream.mark_failure(error_message)
-            except Exception:
-                pass
         upstream.close()
-
-    if error_message:
-        err = {"error": error_message}
-        if verbose:
-            _log_json("OUT POST /api/chat", err)
-        resp = make_response(jsonify(err), 502)
-        for k, v in build_cors_headers().items():
-            resp.headers.setdefault(k, v)
-        return resp
 
     if (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower() == "think-tags":
         rtxt_parts = []
@@ -1281,20 +691,9 @@ def ollama_chat() -> Response:
     }
     if observed_service_tier:
         out_json["service_tier"] = observed_service_tier
-    out_json.update(_ollama_eval_metrics(usage_obj))
+    out_json.update(_OLLAMA_FAKE_EVAL)
     if verbose:
         _log_json("OUT POST /api/chat", out_json)
-    if usage_obj:
-        _record_control_plane_usage(
-            endpoint="/api/chat",
-            model=model_out,
-            prompt_tokens=int(usage_obj.get("input_tokens") or 0),
-            completion_tokens=int(usage_obj.get("output_tokens") or 0),
-            total_tokens=int(usage_obj.get("total_tokens") or 0),
-            status_code=int(upstream.status_code or 200),
-            request_id=response_id,
-            channel_id=_upstream_channel_id(upstream),
-        )
     resp = make_response(jsonify(out_json), 200)
     if service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier

@@ -840,7 +840,6 @@ def sse_translate_chat(
     reasoning_compat: str = "think-tags",
     *,
     include_usage: bool = False,
-    on_complete=None,
 ):
     response_id = "chatcmpl-stream"
     compat = (reasoning_compat or "think-tags").strip().lower()
@@ -1132,11 +1131,6 @@ def sse_translate_chat(
                 m = _extract_usage(evt)
                 if m:
                     upstream_usage = m
-                if callable(on_complete):
-                    try:
-                        on_complete(response_id, upstream_usage)
-                    except Exception:
-                        pass
                 if compat == "think-tags" and think_open and not think_closed:
                     close_chunk = {
                         "id": response_id,
@@ -1178,16 +1172,7 @@ def sse_translate_chat(
         upstream.close()
 
 
-def sse_translate_text(
-    upstream,
-    model: str,
-    created: int,
-    verbose: bool = False,
-    vlog=None,
-    *,
-    include_usage: bool = False,
-    on_complete=None,
-):
+def sse_translate_text(upstream, model: str, created: int, verbose: bool = False, vlog=None, *, include_usage: bool = False):
     response_id = "cmpl-stream"
     upstream_usage = None
     
@@ -1253,11 +1238,6 @@ def sse_translate_text(
                 m = _extract_usage(evt)
                 if m:
                     upstream_usage = m
-                if callable(on_complete):
-                    try:
-                        on_complete(response_id, upstream_usage)
-                    except Exception:
-                        pass
                 if include_usage and upstream_usage:
                     try:
                         usage_chunk = {

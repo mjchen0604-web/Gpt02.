@@ -273,10 +273,7 @@ def cmd_serve(
     service_tier: str | None,
     upstream_mode: str,
     codex_app_server_url: str,
-    channels_path: str | None,
 ) -> int:
-    if isinstance(channels_path, str) and channels_path.strip():
-        os.environ["CHATGPT_LOCAL_CHANNELS_PATH"] = channels_path.strip()
     app = create_app(
         verbose=verbose,
         verbose_obfuscation=verbose_obfuscation,
@@ -359,13 +356,12 @@ def main() -> None:
     )
     p_serve.add_argument(
         "--upstream",
-        choices=["chatgpt-backend", "codex-app-server", "gateway"],
+        choices=["chatgpt-backend", "codex-app-server"],
         default=(os.getenv("CHATGPT_LOCAL_UPSTREAM") or UPSTREAM_MODE_DEFAULT).strip().lower(),
         help=(
             "Select the upstream provider. "
             "'chatgpt-backend' uses chatgpt.com/backend-api/codex/responses. "
-            "'codex-app-server' uses a local Codex app-server WebSocket. "
-            "'gateway' selects channels from CHATGPT_LOCAL_CHANNELS_PATH."
+            "'codex-app-server' uses a local Codex app-server WebSocket."
         ),
     )
     p_serve.add_argument(
@@ -373,12 +369,6 @@ def main() -> None:
         dest="codex_app_server_url",
         default=(os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL") or CODEX_APP_SERVER_URL_DEFAULT).strip(),
         help="WebSocket URL for the local Codex app-server (default: ws://127.0.0.1:8787).",
-    )
-    p_serve.add_argument(
-        "--channels-path",
-        dest="channels_path",
-        default=(os.getenv("CHATGPT_LOCAL_CHANNELS_PATH") or "").strip() or None,
-        help="Path to gateway channels JSON used when --upstream gateway is selected.",
     )
     p_serve.add_argument(
         "--service-tier",
@@ -414,7 +404,6 @@ def main() -> None:
                 service_tier=args.service_tier,
                 upstream_mode=args.upstream,
                 codex_app_server_url=args.codex_app_server_url,
-                channels_path=args.channels_path,
             )
         )
     elif args.command == "info":

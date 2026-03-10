@@ -9,14 +9,11 @@ CHATMOCK_DATA_DIR="${CHATMOCK_DATA_DIR:-/app/storage}"
 CODEX_HOME="${CODEX_HOME:-$CHATMOCK_DATA_DIR/.codex}"
 CHATGPT_LOCAL_HOME="${CHATGPT_LOCAL_HOME:-$CODEX_HOME}"
 CHATGPT_LOCAL_CODEX_APP_SERVER_URL="${CHATGPT_LOCAL_CODEX_APP_SERVER_URL:-ws://127.0.0.1:8787}"
-CHATGPT_LOCAL_UPSTREAM="${CHATGPT_LOCAL_UPSTREAM:-codex-app-server}"
-CHATGPT_LOCAL_CHANNELS_PATH="${CHATGPT_LOCAL_CHANNELS_PATH:-$CHATMOCK_DATA_DIR/gateway.channels.json}"
 
 export CODEX_HOME
 export CHATGPT_LOCAL_HOME
-export CHATGPT_LOCAL_UPSTREAM
+export CHATGPT_LOCAL_UPSTREAM="codex-app-server"
 export CHATGPT_LOCAL_CODEX_APP_SERVER_URL
-export CHATGPT_LOCAL_CHANNELS_PATH
 export CHATMOCK_MANAGE_CODEX_APP_SERVER="${CHATMOCK_MANAGE_CODEX_APP_SERVER:-true}"
 export CHATMOCK_AUTO_START_CODEX_APP_SERVER="${CHATMOCK_AUTO_START_CODEX_APP_SERVER:-true}"
 export CHATMOCK_DASHBOARD_ALLOW_UPLOAD="${CHATMOCK_DASHBOARD_ALLOW_UPLOAD:-true}"
@@ -55,9 +52,8 @@ materialize_secret() {
 
 materialize_secret "$CODEX_HOME/auth.json" "CODEX_AUTH_JSON" "CODEX_AUTH_B64" "CODEX_AUTH_JSON_FILE" "optional"
 materialize_secret "$CODEX_HOME/config.toml" "CODEX_CONFIG_TOML" "CODEX_CONFIG_B64" "CODEX_CONFIG_TOML_FILE" "optional"
-materialize_secret "$CHATGPT_LOCAL_CHANNELS_PATH" "GATEWAY_CHANNELS_JSON" "GATEWAY_CHANNELS_B64" "GATEWAY_CHANNELS_FILE" "optional"
 
-ARGS=(serve --host 0.0.0.0 --port "$PORT" --upstream "$CHATGPT_LOCAL_UPSTREAM")
+ARGS=(serve --host 0.0.0.0 --port "$PORT" --upstream codex-app-server --codex-app-server-url "$CHATGPT_LOCAL_CODEX_APP_SERVER_URL")
 
 bool() {
   case "${1:-}" in
@@ -93,17 +89,6 @@ fi
 if [[ -n "${CHATGPT_LOCAL_SERVICE_TIER:-}" ]]; then
   ARGS+=(--service-tier "${CHATGPT_LOCAL_SERVICE_TIER}")
 fi
-if [[ "$CHATGPT_LOCAL_UPSTREAM" == "codex-app-server" ]]; then
-  ARGS+=(--codex-app-server-url "$CHATGPT_LOCAL_CODEX_APP_SERVER_URL")
-fi
-if [[ "$CHATGPT_LOCAL_UPSTREAM" == "gateway" ]]; then
-  if [[ ! -f "$CHATGPT_LOCAL_CHANNELS_PATH" ]]; then
-    echo "[render-start] Missing gateway channels config at $CHATGPT_LOCAL_CHANNELS_PATH" >&2
-    echo "[render-start] Set one of GATEWAY_CHANNELS_JSON, GATEWAY_CHANNELS_B64, or GATEWAY_CHANNELS_FILE." >&2
-    exit 1
-  fi
-  ARGS+=(--channels-path "$CHATGPT_LOCAL_CHANNELS_PATH")
-fi
 
-echo "[render-start] Starting ChatMock on 0.0.0.0:$PORT (upstream=$CHATGPT_LOCAL_UPSTREAM)"
+echo "[render-start] Starting ChatMock on 0.0.0.0:$PORT"
 exec python chatmock.py "${ARGS[@]}"
