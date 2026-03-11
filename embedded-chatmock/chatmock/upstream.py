@@ -10,6 +10,7 @@ from flask import Response, current_app, jsonify, make_response
 from .config import CHATGPT_RESPONSES_URL
 from .codex_app_server import CodexAppServerError, connect_codex_app_server
 from .http import build_cors_headers
+from .model_profiles import is_public_chatmock_model
 from .reasoning import split_model_alias
 from .session import ensure_session_id
 from flask import request as flask_request
@@ -81,12 +82,7 @@ def _normalize_backend_service_tier(service_tier: str | None) -> str | None:
 
 
 def _prefers_codex_app_server(model: str) -> bool:
-    normalized_model = str(model or "").strip().lower()
-    if "codex" in normalized_model or normalized_model.startswith("codex"):
-        return True
-    if normalized_model.startswith("gpt-5.4-fast"):
-        return True
-    return False
+    return is_public_chatmock_model(model)
 
 
 def _resolve_upstream_mode(configured_mode: str, model: str) -> str:

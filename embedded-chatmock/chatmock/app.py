@@ -6,6 +6,7 @@ from .config import (
     BASE_INSTRUCTIONS,
     CODEX_APP_SERVER_URL_DEFAULT,
     GPT5_CODEX_INSTRUCTIONS,
+    GPT5_HYBRID_INSTRUCTIONS,
     UPSTREAM_MODE_DEFAULT,
 )
 from .codex_manager import CodexAppServerPoolManager
@@ -55,6 +56,7 @@ def create_app(
         DEBUG_MODEL=debug_model,
         BASE_INSTRUCTIONS=BASE_INSTRUCTIONS,
         GPT5_CODEX_INSTRUCTIONS=GPT5_CODEX_INSTRUCTIONS,
+        GPT5_HYBRID_INSTRUCTIONS=GPT5_HYBRID_INSTRUCTIONS,
         EXPOSE_REASONING_MODELS=bool(expose_reasoning_models),
         DEFAULT_WEB_SEARCH=bool(default_web_search),
         SERVICE_TIER=normalized_service_tier,

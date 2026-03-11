@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Tuple
 
 from flask import Blueprint, Response, current_app, jsonify, make_response, request
 
-from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .http import build_cors_headers
 from .limits import record_rate_limits_from_response
+from .model_profiles import select_instructions_for_model
 from .reasoning import (
     allowed_efforts_for_model,
     build_reasoning_param,
@@ -32,13 +32,7 @@ def _log_json(prefix: str, payload: Any) -> None:
 
 
 def _instructions_for_model(model: str) -> str:
-    base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
-    lower_model = (model or "").lower()
-    if "codex" in lower_model or extract_service_tier_from_model_name(model) == "fast":
-        codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
-        if isinstance(codex, str) and codex.strip():
-            return codex
-    return base
+    return select_instructions_for_model(current_app.config, model)
 
 
 def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None = None) -> str | None:

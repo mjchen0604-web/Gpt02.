@@ -344,7 +344,9 @@ class CodexAppServerUpstream:
             turn_params["effort"] = effort.strip().lower()
         summary = self._reasoning_param.get("summary")
         if isinstance(summary, str) and summary.strip():
-            turn_params["summary"] = summary.strip().lower()
+            normalized_summary = summary.strip().lower()
+            if normalized_summary and normalized_summary != "auto":
+                turn_params["summary"] = normalized_summary
         if isinstance(self._service_tier, str) and self._service_tier:
             turn_params["serviceTier"] = self._service_tier
 
