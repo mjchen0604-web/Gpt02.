@@ -442,15 +442,18 @@ class CodexAppServerManager:
     def _wait_until_ready(self, timeout_seconds: int) -> bool:
         deadline = time.time() + max(1, timeout_seconds)
         while time.time() < deadline:
+            if self._is_port_open(timeout=0.3):
+                return True
             with self._lock:
                 proc = self._proc
                 if proc is not None and proc.poll() is not None:
+                    if self._is_port_open(timeout=0.3):
+                        self._proc = None
+                        return True
                     self._last_exit_code = proc.returncode
                     self._last_error = f"codex app-server exited with code {proc.returncode}"
                     self._proc = None
                     return False
-            if self._is_port_open(timeout=0.3):
-                return True
             time.sleep(0.25)
         return False
 
@@ -628,7 +631,7 @@ class CodexAppServerPoolManager:
 
     def status(self) -> dict[str, Any]:
         statuses = self.status_all()
-        running = [item for item in statuses if item.get("status") == "running" and item.get("listening")]
+        running = [item for item in statuses if item.get("status") in ("running", "external") and item.get("listening")]
         starting = [item for item in statuses if item.get("status") == "starting"]
         awaiting = [item for item in statuses if item.get("status") == "awaiting_auth"]
         external = [item for item in statuses if item.get("status") == "external"]
@@ -764,7 +767,7 @@ class CodexAppServerPoolManager:
             label = status.get("label")
             if not isinstance(label, str):
                 continue
-            if status.get("status") != "running" or not status.get("listening"):
+            if status.get("status") not in ("running", "external") or not status.get("listening"):
                 continue
             state = self._request_state.get(label) or {}
             cooldown_until = float(state.get("cooldown_until") or 0.0)
