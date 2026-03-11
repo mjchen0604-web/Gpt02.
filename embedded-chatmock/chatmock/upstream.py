@@ -19,6 +19,7 @@ from .utils import (
     get_request_retry_limit,
     get_retryable_statuses,
     mark_chatgpt_auth_result,
+    remove_chatgpt_auth_candidate,
 )
 
 
@@ -305,6 +306,19 @@ def _start_chatgpt_backend_request(
 
             last_upstream = upstream
             status = int(upstream.status_code or 0)
+            if status == 402:
+                mark_chatgpt_auth_result(label, success=False, status_code=status)
+                remove_chatgpt_auth_candidate(
+                    candidate,
+                    reason=f"HTTP 402 while requesting model {model}",
+                )
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+                if verbose:
+                    print(f"Upstream status 402 for {label}; removed account and trying next candidate.")
+                continue
             should_retry = status in retryable_statuses
             has_more_candidates = idx < len(round_candidates) - 1
             has_more_rounds = round_idx < request_retry_limit

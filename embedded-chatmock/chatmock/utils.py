@@ -84,6 +84,17 @@ def _write_json_file(path: str, payload: Any) -> bool:
         return False
 
 
+def _delete_file(path: str) -> bool:
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return True
+    except Exception as exc:
+        eprint(f"ERROR: unable to delete file {path}: {exc}")
+        return False
+
+
 def _read_raw_json_file(path: str) -> Dict[str, Any] | List[Any] | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -358,7 +369,10 @@ def _candidate_from_auth_obj(
     *,
     label: str,
     ensure_fresh: bool,
-) -> tuple[Dict[str, str] | None, bool]:
+    source_kind: str = "",
+    source_path: str = "",
+    source_index: int | None = None,
+) -> tuple[Dict[str, Any] | None, bool]:
     access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
     changed = False
     refreshed = False
@@ -401,6 +415,9 @@ def _candidate_from_auth_obj(
             "label": label,
             "access_token": access_token,
             "account_id": account_id,
+            "source_kind": source_kind,
+            "source_path": source_path,
+            "source_index": source_index,
         },
         changed,
     )
@@ -505,6 +522,96 @@ def _parse_iso8601(value: str) -> Optional[datetime.datetime]:
 
 def _now_iso8601() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _dashboard_settings_path() -> str | None:
+    explicit = (os.getenv("CHATMOCK_DASHBOARD_SETTINGS_PATH") or "").strip()
+    if explicit:
+        return explicit
+    data_dir = (os.getenv("CHATMOCK_DATA_DIR") or "").strip()
+    if data_dir:
+        return os.path.join(data_dir, "accounts", "_dashboard_settings.json")
+    return None
+
+
+def _load_dashboard_settings() -> Dict[str, Any] | None:
+    path = _dashboard_settings_path()
+    if not path:
+        return None
+    data = _read_raw_json_file(path)
+    return data if isinstance(data, dict) else None
+
+
+def _persist_dashboard_auth_files(paths: List[str]) -> bool:
+    path = _dashboard_settings_path()
+    if not path:
+        return False
+    payload = _load_dashboard_settings() or {}
+    payload["authFiles"] = list(paths)
+    payload["updatedAt"] = _now_iso8601()
+    return _write_json_file(path, payload)
+
+
+def _remove_path_from_auth_files_env(path: str) -> List[str]:
+    current = _parse_auth_files_env()
+    updated = [item for item in current if item != path]
+    if updated:
+        os.environ["CHATGPT_LOCAL_AUTH_FILES"] = ",".join(updated)
+    else:
+        os.environ.pop("CHATGPT_LOCAL_AUTH_FILES", None)
+    return updated
+
+
+def _remove_label_state(label: str) -> None:
+    with _AUTH_POOL_STATE_LOCK:
+        _AUTH_POOL_STATE.pop(label, None)
+
+
+def _remove_auth_from_pool_file(pool_path: str, index: int) -> bool:
+    raw_pool = _read_raw_json_file(pool_path)
+    if not isinstance(raw_pool, (dict, list)):
+        return False
+    removed = False
+    if isinstance(raw_pool, list):
+        if 0 <= index < len(raw_pool):
+            raw_pool.pop(index)
+            removed = True
+    else:
+        accounts = raw_pool.get("accounts")
+        if isinstance(accounts, list) and 0 <= index < len(accounts):
+            accounts.pop(index)
+            raw_pool["accounts"] = accounts
+            removed = True
+    if not removed:
+        return False
+    return _write_json_file(pool_path, raw_pool)
+
+
+def remove_chatgpt_auth_candidate(candidate: Dict[str, Any], *, reason: str = "") -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    label = str(candidate.get("label") or "").strip()
+    source_kind = str(candidate.get("source_kind") or "").strip()
+    source_path = str(candidate.get("source_path") or "").strip()
+    source_index = candidate.get("source_index")
+
+    success = False
+    if source_kind in ("auth_file", "default_auth"):
+        if source_path:
+            success = _delete_file(source_path)
+            updated = _remove_path_from_auth_files_env(source_path)
+            _persist_dashboard_auth_files(updated)
+    elif source_kind == "auth_pool":
+        if source_path and isinstance(source_index, int):
+            success = _remove_auth_from_pool_file(source_path, source_index)
+
+    if success and label:
+        _remove_label_state(label)
+        if reason:
+            eprint(f"INFO: removed ChatGPT auth candidate {label}: {reason}")
+        else:
+            eprint(f"INFO: removed ChatGPT auth candidate {label}")
+    return success
 
 
 def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:
@@ -756,8 +863,8 @@ def _parse_auth_files_env() -> List[str]:
     return paths
 
 
-def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
+def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
     paths = _parse_auth_files_env()
     for idx, path in enumerate(paths):
         auth_obj = _read_json_file(path)
@@ -767,7 +874,13 @@ def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dic
         dirname = os.path.basename(os.path.dirname(path))
         filename = os.path.basename(path)
         label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
-        candidate, changed = _candidate_from_auth_obj(auth_obj, label=label, ensure_fresh=ensure_fresh)
+        candidate, changed = _candidate_from_auth_obj(
+            auth_obj,
+            label=label,
+            ensure_fresh=ensure_fresh,
+            source_kind="auth_file",
+            source_path=path,
+        )
         if changed:
             _write_json_file(path, auth_obj)
         if candidate is not None:
@@ -785,7 +898,7 @@ def _extract_pool_accounts(raw_pool: Dict[str, Any] | List[Any]) -> List[Dict[st
     return []
 
 
-def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
     path = _find_auth_file_path("auth_pool.json")
     if not path:
         return []
@@ -797,7 +910,7 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
         return []
 
     changed = False
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     for idx, account_obj in enumerate(accounts):
         label = ""
         for key in ("name", "alias", "label"):
@@ -807,7 +920,14 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
                 break
         if not label:
             label = f"pool-{idx + 1}"
-        candidate, account_changed = _candidate_from_auth_obj(account_obj, label=label, ensure_fresh=ensure_fresh)
+        candidate, account_changed = _candidate_from_auth_obj(
+            account_obj,
+            label=label,
+            ensure_fresh=ensure_fresh,
+            source_kind="auth_pool",
+            source_path=path,
+            source_index=idx,
+        )
         changed = changed or account_changed
         if candidate is not None:
             out.append(candidate)
@@ -817,7 +937,7 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
     return out
 
 
-def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
     candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
     if not candidates:
         candidates = _load_auth_candidates_from_pool_file(ensure_fresh=ensure_fresh)
@@ -826,7 +946,16 @@ def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dic
         if not account_id:
             account_id = _derive_account_id(id_token)
         if isinstance(access_token, str) and access_token and isinstance(account_id, str) and account_id:
-            candidates = [{"label": "default", "access_token": access_token, "account_id": account_id}]
+            candidates = [
+                {
+                    "label": "default",
+                    "access_token": access_token,
+                    "account_id": account_id,
+                    "source_kind": "default_auth",
+                    "source_path": _find_auth_file_path("auth.json") or "",
+                    "source_index": None,
+                }
+            ]
     candidates = _apply_account_cooldown(candidates)
     return _ordered_candidates_by_strategy(candidates)
 
