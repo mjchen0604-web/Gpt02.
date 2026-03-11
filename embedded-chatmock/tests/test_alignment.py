@@ -27,7 +27,7 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(_resolve_upstream_mode("auto", "gpt-5.4"), "codex-app-server")
         self.assertEqual(_resolve_upstream_mode("auto", "gpt-5.2"), "codex-app-server")
         self.assertEqual(_resolve_upstream_mode("auto", "codex-mini"), "codex-app-server")
-        self.assertEqual(_resolve_upstream_mode("auto", "unknown-model"), "chatgpt-backend")
+        self.assertEqual(_resolve_upstream_mode("auto", "unknown-model"), "codex-app-server")
 
 
 if __name__ == "__main__":

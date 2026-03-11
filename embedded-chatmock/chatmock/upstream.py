@@ -1,27 +1,13 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any, Dict, List, Tuple
 
-import requests
-from flask import Response, current_app, jsonify, make_response
+from flask import current_app
 
-from .config import CHATGPT_RESPONSES_URL
 from .codex_app_server import CodexAppServerError, connect_codex_app_server
-from .http import build_cors_headers
 from .model_profiles import is_public_chatmock_model
 from .reasoning import split_model_alias
-from .session import ensure_session_id
-from flask import request as flask_request
-from .utils import (
-    get_effective_chatgpt_auth_candidates,
-    get_max_retry_interval_seconds,
-    get_request_retry_limit,
-    get_retryable_statuses,
-    mark_chatgpt_auth_result,
-    remove_chatgpt_auth_candidate,
-)
 
 
 def _log_json(prefix: str, payload: Any) -> None:
@@ -70,30 +56,12 @@ def normalize_model_name(name: str | None, debug_model: str | None = None) -> st
     return mapping.get(base, base or "gpt-5")
 
 
-def _normalize_backend_service_tier(service_tier: str | None) -> str | None:
-    if not isinstance(service_tier, str) or not service_tier.strip():
-        return None
-    normalized = service_tier.strip().lower()
-    if normalized in ("off", "none", "unset", "default"):
-        return None
-    if normalized == "fast":
-        return "priority"
-    return normalized
-
-
 def _prefers_codex_app_server(model: str) -> bool:
     return is_public_chatmock_model(model)
 
 
 def _resolve_upstream_mode(configured_mode: str, model: str) -> str:
-    normalized_mode = str(configured_mode or "").strip().lower()
-    if normalized_mode in ("", "default"):
-        normalized_mode = "auto"
-    if normalized_mode != "auto":
-        return normalized_mode
-    if _prefers_codex_app_server(model):
-        return "codex-app-server"
-    return "chatgpt-backend"
+    return "codex-app-server"
 
 
 def _start_codex_app_server_request(
@@ -154,33 +122,6 @@ def _start_codex_app_server_request(
         except Exception as exc:
             last_error = exc
             status_code = exc.status_code if isinstance(exc, CodexAppServerError) else None
-            if manager is not None and hasattr(manager, "mark_request_result"):
-                try:
-                    manager.mark_request_result(candidate_label, success=False, error_message=str(exc), status_code=status_code)
-                except Exception:
-                    pass
-            if isinstance(status_code, int) and status_code == 402:
-                removed = False
-                if manager is not None and hasattr(manager, "remove_auth_for_label"):
-                    try:
-                        removed = bool(
-                            manager.remove_auth_for_label(
-                                candidate_label,
-                                reason=f"HTTP 402 while requesting model {model} via codex-app-server",
-                            )
-                        )
-                    except Exception:
-                        removed = False
-                if not removed and candidate.get("auth_path"):
-                    remove_chatgpt_auth_candidate(
-                        {
-                            "label": candidate_label,
-                            "source_kind": "auth_file",
-                            "source_path": str(candidate.get("auth_path") or ""),
-                            "source_index": None,
-                        },
-                        reason=f"HTTP 402 while requesting model {model} via codex-app-server",
-                    )
             if verbose:
                 print(f"codex app-server upstream failed for {candidate_label} ({candidate_url}): {exc}")
             continue
@@ -206,175 +147,6 @@ def _start_codex_app_server_request(
     return None, resp
 
 
-def _start_chatgpt_backend_request(
-    model: str,
-    input_items: List[Dict[str, Any]],
-    *,
-    instructions: str | None = None,
-    tools: List[Dict[str, Any]] | None = None,
-    tool_choice: Any | None = None,
-    parallel_tool_calls: bool = False,
-    reasoning_param: Dict[str, Any] | None = None,
-    service_tier: str | None = None,
-    verbose: bool = False,
-):
-    auth_candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
-    if not auth_candidates:
-        resp = make_response(
-            jsonify(
-                {
-                    "error": {
-                        "message": (
-                            "Missing ChatGPT credentials. Run 'python3 chatmock.py login' first, "
-                            "or configure CHATGPT_LOCAL_AUTH_FILES/auth_pool.json for multi-account mode."
-                        ),
-                    }
-                }
-            ),
-            401,
-        )
-        for k, v in build_cors_headers().items():
-            resp.headers.setdefault(k, v)
-        return None, resp
-
-    include: List[str] = []
-    if isinstance(reasoning_param, dict):
-        include.append("reasoning.encrypted_content")
-
-    client_session_id = None
-    try:
-        client_session_id = (
-            flask_request.headers.get("X-Session-Id")
-            or flask_request.headers.get("session_id")
-            or None
-        )
-    except Exception:
-        client_session_id = None
-    session_id = ensure_session_id(instructions, input_items, client_session_id)
-
-    responses_payload = {
-        "model": model,
-        "instructions": instructions if isinstance(instructions, str) and instructions.strip() else instructions,
-        "input": input_items,
-        "tools": tools or [],
-        "tool_choice": tool_choice if tool_choice in ("auto", "none") or isinstance(tool_choice, dict) else "auto",
-        "parallel_tool_calls": bool(parallel_tool_calls),
-        "store": False,
-        "stream": True,
-        "prompt_cache_key": session_id,
-    }
-    if include:
-        responses_payload["include"] = include
-
-    if reasoning_param is not None:
-        responses_payload["reasoning"] = reasoning_param
-    backend_service_tier = _normalize_backend_service_tier(service_tier)
-    if isinstance(backend_service_tier, str) and backend_service_tier:
-        responses_payload["service_tier"] = backend_service_tier
-
-    if verbose:
-        _log_json("OUTBOUND >> ChatGPT Responses API payload", responses_payload)
-
-    retryable_statuses = get_retryable_statuses()
-    request_retry_limit = get_request_retry_limit()
-    max_retry_interval = get_max_retry_interval_seconds()
-    last_exception = None
-    last_upstream = None
-
-    for round_idx in range(request_retry_limit + 1):
-        if round_idx > 0:
-            sleep_secs = min(max_retry_interval, 2 ** (round_idx - 1))
-            if verbose:
-                print(f"Retry round {round_idx}/{request_retry_limit} after {sleep_secs}s")
-            time.sleep(sleep_secs)
-
-        round_candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
-        if not round_candidates:
-            break
-
-        for idx, candidate in enumerate(round_candidates):
-            access_token = candidate.get("access_token")
-            account_id = candidate.get("account_id")
-            label = candidate.get("label") or f"candidate-{idx + 1}"
-            if not access_token or not account_id:
-                continue
-
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-                "chatgpt-account-id": account_id,
-                "OpenAI-Beta": "responses=experimental",
-                "session_id": session_id,
-            }
-
-            try:
-                upstream = requests.post(
-                    CHATGPT_RESPONSES_URL,
-                    headers=headers,
-                    json=responses_payload,
-                    stream=True,
-                    timeout=600,
-                )
-            except requests.RequestException as exc:
-                last_exception = exc
-                mark_chatgpt_auth_result(label, success=False, error_message=str(exc))
-                if verbose:
-                    print(f"Upstream request failed for {label}: {exc}")
-                continue
-
-            last_upstream = upstream
-            status = int(upstream.status_code or 0)
-            if status == 402:
-                mark_chatgpt_auth_result(label, success=False, status_code=status)
-                remove_chatgpt_auth_candidate(
-                    candidate,
-                    reason=f"HTTP 402 while requesting model {model}",
-                )
-                try:
-                    upstream.close()
-                except Exception:
-                    pass
-                if verbose:
-                    print(f"Upstream status 402 for {label}; removed account and trying next candidate.")
-                continue
-            should_retry = status in retryable_statuses
-            has_more_candidates = idx < len(round_candidates) - 1
-            has_more_rounds = round_idx < request_retry_limit
-
-            if should_retry:
-                mark_chatgpt_auth_result(label, success=False, status_code=status)
-                if has_more_candidates or has_more_rounds:
-                    if verbose:
-                        print(f"Upstream status {status} for {label}; retrying with next account.")
-                    try:
-                        upstream.close()
-                    except Exception:
-                        pass
-                    continue
-                return upstream, None
-
-            mark_chatgpt_auth_result(label, success=True, status_code=status)
-            return upstream, None
-
-    if last_upstream is not None:
-        return last_upstream, None
-
-    if last_exception is not None:
-        resp = make_response(
-            jsonify({"error": {"message": f"Upstream ChatGPT request failed: {last_exception}"}}),
-            502,
-        )
-    else:
-        resp = make_response(
-            jsonify({"error": {"message": "No valid ChatGPT account is available."}}),
-            401,
-        )
-    for k, v in build_cors_headers().items():
-        resp.headers.setdefault(k, v)
-    return None, resp
-
-
 def start_upstream_request(
     model: str,
     input_items: List[Dict[str, Any]],
@@ -387,29 +159,16 @@ def start_upstream_request(
     service_tier: str | None = None,
     web_search_mode: str | None = None,
 ):
-    upstream_mode = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
+    upstream_mode = str(current_app.config.get("UPSTREAM_MODE") or "codex-app-server").strip().lower()
     verbose = False
     try:
         verbose = bool(current_app.config.get("VERBOSE"))
     except Exception:
         verbose = False
     selected_mode = _resolve_upstream_mode(upstream_mode, model)
-    if verbose and upstream_mode == "auto":
+    if verbose:
         print(f"auto upstream -> selected {selected_mode} for model {model}")
-    if selected_mode == "codex-app-server":
-        return _start_codex_app_server_request(
-            model,
-            input_items,
-            instructions=instructions,
-            tools=tools,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            reasoning_param=reasoning_param,
-            service_tier=service_tier,
-            web_search_mode=web_search_mode,
-            verbose=verbose,
-        )
-    return _start_chatgpt_backend_request(
+    return _start_codex_app_server_request(
         model,
         input_items,
         instructions=instructions,
@@ -418,5 +177,6 @@ def start_upstream_request(
         parallel_tool_calls=parallel_tool_calls,
         reasoning_param=reasoning_param,
         service_tier=service_tier,
+        web_search_mode=web_search_mode,
         verbose=verbose,
     )
