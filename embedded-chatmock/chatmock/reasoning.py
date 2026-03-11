@@ -49,6 +49,8 @@ def allowed_efforts_for_model(model: str | None) -> Set[str]:
     normalized, _, _ = split_model_alias(model)
     if not normalized:
         return DEFAULT_REASONING_EFFORTS
+    if normalized in ("codex-mini", "codex-mini-latest") or normalized.startswith("gpt-5.1-codex-mini"):
+        return set()
     if normalized.startswith("gpt-5.3"):
         return {"low", "medium", "high", "xhigh"}
     if normalized.startswith("gpt-5.2"):
@@ -73,6 +75,8 @@ def build_reasoning_param(
     summary = (base_summary or "").strip().lower()
 
     valid_efforts = allowed_efforts or DEFAULT_REASONING_EFFORTS
+    if allowed_efforts is not None and len(allowed_efforts) == 0:
+        return {}
     valid_summaries = {"auto", "concise", "detailed", "none"}
 
     if isinstance(overrides, dict):

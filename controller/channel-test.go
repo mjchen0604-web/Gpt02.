@@ -600,8 +600,8 @@ func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
 }
 
 func buildTestRequest(model string, endpointType string, channel *model.Channel, isStream bool) dto.Request {
-	testResponsesInput := json.RawMessage(`[{"role":"user","content":"hi"}]`)
 	testPrompt := "What is 100 divided by 2 multiplied by 10 divided by 5? Reply with only the final number."
+	testResponsesInput := json.RawMessage(fmt.Sprintf(`[{"role":"user","content":%q}]`, testPrompt))
 
 	// 根据端点类型构建不同的测试请求
 	if endpointType != "" {
@@ -653,7 +653,7 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 				Messages: []dto.Message{
 					{
 						Role:    "user",
-						Content: "hi",
+						Content: testPrompt,
 					},
 				},
 				MaxTokens: lo.ToPtr(maxTokens),

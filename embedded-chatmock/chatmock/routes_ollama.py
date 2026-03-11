@@ -72,7 +72,8 @@ def ollama_version() -> Response:
 
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
-    if "codex" in (model or "").lower():
+    lower_model = (model or "").lower()
+    if "codex" in lower_model or extract_service_tier_from_model_name(model) == "fast":
         codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
         if isinstance(codex, str) and codex.strip():
             return codex
@@ -373,7 +374,7 @@ def ollama_chat() -> Response:
             upstream2, err2 = start_upstream_request(
                 normalize_model_name(model),
                 input_items,
-                instructions=BASE_INSTRUCTIONS,
+                instructions=_instructions_for_model(normalize_model_name(model)),
                 tools=base_tools_only,
                 tool_choice=safe_choice,
                 parallel_tool_calls=parallel_tool_calls,
