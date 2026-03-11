@@ -356,10 +356,13 @@ def main() -> None:
     )
     p_serve.add_argument(
         "--upstream",
-        choices=["codex-app-server"],
-        default="codex-app-server",
+        choices=["auto", "chatgpt-backend", "codex-app-server"],
+        default=(os.getenv("CHATGPT_LOCAL_UPSTREAM") or UPSTREAM_MODE_DEFAULT).strip().lower(),
         help=(
-            "Use the local Codex app-server WebSocket as the only upstream provider."
+            "Select the upstream provider. "
+            "'auto' routes codex/fast/versioned GPT-5 families to codex-app-server and keeps core GPT-5 on chatgpt-backend. "
+            "'chatgpt-backend' uses chatgpt.com/backend-api/codex/responses. "
+            "'codex-app-server' uses a local Codex app-server WebSocket."
         ),
     )
     p_serve.add_argument(
@@ -374,7 +377,7 @@ def main() -> None:
         default=(os.getenv("CHATGPT_LOCAL_SERVICE_TIER") or "").strip() or None,
         help=(
             "Optional service tier override. "
-            "Use 'fast' or 'flex' with codex-app-server. "
+            "Use 'fast' or 'flex' with codex-app-server, or 'priority' with chatgpt-backend. "
             "Omit to leave unset."
         ),
     )

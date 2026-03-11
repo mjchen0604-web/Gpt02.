@@ -16,18 +16,8 @@ from .reasoning import (
     extract_reasoning_from_model_name,
     extract_service_tier_from_model_name,
 )
-from .upstream_errors import (
-    build_error_info,
-    build_openai_error_response,
-    error_info_from_event_response,
-    error_info_from_flask_response,
-    error_info_from_http_response,
-    normalized_error_payload,
-    should_retry_next_candidate,
-)
-from .upstream import get_available_upstream_candidate_count, normalize_model_name, start_upstream_request
+from .upstream import normalize_model_name, start_upstream_request
 from .utils import (
-    RetryableStreamError,
     convert_chat_messages_to_responses_input,
     convert_tools_chat_to_responses,
     sse_translate_chat,
@@ -66,12 +56,6 @@ def _wrap_stream_logging(label: str, iterator, enabled: bool):
             yield chunk
 
     return _gen()
-
-
-def _upstream_attempt_limit(is_stream: bool) -> int:
-    if is_stream:
-        return 1
-    return max(1, get_available_upstream_candidate_count())
 
 
 def _instructions_for_model(model: str) -> str:
@@ -254,301 +238,231 @@ def chat_completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
-    attempt_limit = _upstream_attempt_limit(is_stream)
-    last_error_info: Dict[str, Any] | None = None
-    for attempt_index in range(attempt_limit):
-        upstream, error_resp = start_upstream_request(
-            model,
-            input_items,
-            instructions=_instructions_for_model(model),
-            tools=tools_responses,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            reasoning_param=reasoning_param,
-            service_tier=service_tier,
-            web_search_mode=web_search_mode,
-        )
-        if error_resp is not None:
-            error_info = error_info_from_flask_response("chatcore", "request_start", error_resp)
-            last_error_info = error_info
-            if not is_stream and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                continue
-            if verbose:
-                try:
-                    body = error_resp.get_data(as_text=True)
-                    if body:
-                        try:
-                            parsed = json.loads(body)
-                        except Exception:
-                            parsed = body
-                        _log_json("OUT POST /v1/chat/completions", parsed)
-                except Exception:
-                    pass
-            return build_openai_error_response(error_info)
 
-        record_rate_limits_from_response(upstream)
-        created = int(time.time())
-        if upstream.status_code >= 400:
-            error_info = error_info_from_http_response(
-                getattr(upstream, "chatmock_source", "upstream"),
-                "http",
-                upstream,
-            )
-            last_error_info = error_info
-            if had_builtin_search_tools:
-                if verbose:
-                    print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
-                base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
-                safe_choice = payload.get("tool_choice", "auto")
-                upstream2, err2 = start_upstream_request(
-                    model,
-                    input_items,
-                    instructions=_instructions_for_model(model),
-                    tools=base_tools_only,
-                    tool_choice=safe_choice,
-                    parallel_tool_calls=parallel_tool_calls,
-                    reasoning_param=reasoning_param,
-                    service_tier=service_tier,
-                    web_search_mode="disabled",
-                )
-                record_rate_limits_from_response(upstream2)
-                if err2 is None and upstream2 is not None and upstream2.status_code < 400:
-                    upstream = upstream2
-                else:
-                    if err2 is not None:
-                        error_info = error_info_from_flask_response("chatcore", "tool_retry", err2)
-                    elif upstream2 is not None:
-                        error_info = error_info_from_http_response(
-                            getattr(upstream2, "chatmock_source", "upstream"),
-                            "tool_retry",
-                            upstream2,
-                        )
-                    last_error_info = error_info
-                    if not is_stream and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                        continue
-                    if verbose:
-                        _log_json("OUT POST /v1/chat/completions", {"error": error_info})
-                    return build_openai_error_response(error_info)
-            else:
-                if not is_stream and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                    continue
-                if verbose:
-                    print("Upstream error status=", upstream.status_code)
-                    _log_json("OUT POST /v1/chat/completions", {"error": error_info})
-                return build_openai_error_response(error_info)
-
-        if is_stream:
-            if verbose:
-                print("OUT POST /v1/chat/completions (streaming response)")
-
-            def _retrying_stream():
-                current_upstream = upstream
-                current_created = created
-                for stream_attempt in range(attempt_limit - attempt_index):
-                    try:
-                        yield from sse_translate_chat(
-                            current_upstream,
-                            requested_model or model,
-                            current_created,
-                            verbose=verbose_obfuscation,
-                            vlog=print if verbose_obfuscation else None,
-                            reasoning_compat=reasoning_compat,
-                            include_usage=include_usage,
-                        )
-                        return
-                    except RetryableStreamError as exc:
-                        error_info = exc.error_info
-                        if stream_attempt + 1 >= (attempt_limit - attempt_index):
-                            payload = {"error": normalized_error_payload(error_info)}
-                            yield f"data: {json.dumps(payload)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
-                            return
-                        next_upstream, next_error = start_upstream_request(
-                            model,
-                            input_items,
-                            instructions=_instructions_for_model(model),
-                            tools=tools_responses,
-                            tool_choice=tool_choice,
-                            parallel_tool_calls=parallel_tool_calls,
-                            reasoning_param=reasoning_param,
-                            service_tier=service_tier,
-                            web_search_mode=web_search_mode,
-                        )
-                        if next_error is not None:
-                            next_error_info = error_info_from_flask_response("chatcore", "request_start", next_error)
-                            payload = {"error": normalized_error_payload(next_error_info)}
-                            yield f"data: {json.dumps(payload)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
-                            return
-                        current_upstream = next_upstream
-                        current_created = int(time.time())
-
-            stream_iter = _retrying_stream()
-            stream_iter = _wrap_stream_logging("STREAM OUT /v1/chat/completions", stream_iter, verbose)
-            resp = Response(
-                stream_iter,
-                status=upstream.status_code,
-                mimetype="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
-            if service_tier:
-                resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-            for k, v in build_cors_headers().items():
-                resp.headers.setdefault(k, v)
-            return resp
-
-        full_text = ""
-        reasoning_summary_text = ""
-        reasoning_full_text = ""
-        response_id = "chatcmpl"
-        tool_calls: List[Dict[str, Any]] = []
-        error_message: str | None = None
-        error_info: Dict[str, Any] | None = None
-        usage_obj: Dict[str, int] | None = None
-        observed_service_tier: str | None = None
-        completed_ok = False
-
-        def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-            try:
-                usage = (evt.get("response") or {}).get("usage")
-                if not isinstance(usage, dict):
-                    return None
-                pt = int(usage.get("input_tokens") or 0)
-                ct = int(usage.get("output_tokens") or 0)
-                tt = int(usage.get("total_tokens") or (pt + ct))
-                return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-            except Exception:
-                return None
-
-        try:
-            for raw in upstream.iter_lines(decode_unicode=False):
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: "):].strip()
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    break
-                try:
-                    evt = json.loads(data)
-                except Exception:
-                    continue
-                kind = evt.get("type")
-                mu = _extract_usage(evt)
-                if mu:
-                    usage_obj = mu
-                if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                    response_id = evt["response"].get("id") or response_id
-                if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
-                    observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
-                if kind == "response.output_text.delta":
-                    full_text += evt.get("delta") or ""
-                elif kind == "response.reasoning_summary_text.delta":
-                    reasoning_summary_text += evt.get("delta") or ""
-                elif kind == "response.reasoning_text.delta":
-                    reasoning_full_text += evt.get("delta") or ""
-                elif kind == "response.output_item.done":
-                    item = evt.get("item") or {}
-                    if isinstance(item, dict) and item.get("type") == "function_call":
-                        call_id = item.get("call_id") or item.get("id") or ""
-                        name = item.get("name") or ""
-                        args = item.get("arguments") or ""
-                        if not isinstance(args, str):
-                            try:
-                                args = json.dumps(args, ensure_ascii=False)
-                            except Exception:
-                                args = "{}"
-                        if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
-                            tool_calls.append(
-                                {
-                                    "id": call_id,
-                                    "type": "function",
-                                    "function": {"name": name, "arguments": args},
-                                }
-                            )
-                elif kind == "response.failed":
-                    response_payload = evt.get("response") if isinstance(evt.get("response"), dict) else {}
-                    error_info = error_info_from_event_response(
-                        getattr(upstream, "chatmock_source", "upstream"),
-                        "stream",
-                        response_payload,
-                    )
-                    error_message = error_info.get("raw_message") or "response.failed"
-                elif kind == "response.completed":
-                    completed_ok = True
-                    break
-        finally:
-            if completed_ok and hasattr(upstream, "mark_success"):
-                try:
-                    upstream.mark_success()
-                except Exception:
-                    pass
-            elif error_message and hasattr(upstream, "mark_failure"):
-                try:
-                    upstream.mark_failure(error_message)
-                except Exception:
-                    pass
-            upstream.close()
-
-        if error_message:
-            if error_info is None:
-                error_info = build_error_info(
-                    source=getattr(upstream, "chatmock_source", "upstream"),
-                    phase="stream",
-                    raw_status=int(getattr(upstream, "status_code", 502) or 502),
-                    raw_message=error_message,
-                    raw_body={"message": error_message},
-                )
-            last_error_info = error_info
-            if should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                continue
-            return build_openai_error_response(error_info)
-
-        if tool_calls:
-            message = {"role": "assistant", "content": None, "tool_calls": tool_calls}
-        else:
-            message = {"role": "assistant", "content": full_text if full_text else None}
-            message = apply_reasoning_to_message(message, reasoning_summary_text, reasoning_full_text, reasoning_compat)
-        completion = {
-            "id": response_id or "chatcmpl",
-            "object": "chat.completion",
-            "created": created,
-            "model": requested_model or model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": message,
-                    "finish_reason": "tool_calls" if tool_calls else "stop",
-                }
-            ],
-            **({"usage": usage_obj} if usage_obj else {}),
-        }
-        if observed_service_tier:
-            completion["service_tier"] = observed_service_tier
+    upstream, error_resp = start_upstream_request(
+        model,
+        input_items,
+        instructions=_instructions_for_model(model),
+        tools=tools_responses,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+        reasoning_param=reasoning_param,
+        service_tier=service_tier,
+        web_search_mode=web_search_mode,
+    )
+    if error_resp is not None:
         if verbose:
-            _log_json("OUT POST /v1/chat/completions", completion)
-        resp = make_response(jsonify(completion), upstream.status_code)
+            try:
+                body = error_resp.get_data(as_text=True)
+                if body:
+                    try:
+                        parsed = json.loads(body)
+                    except Exception:
+                        parsed = body
+                    _log_json("OUT POST /v1/chat/completions", parsed)
+            except Exception:
+                pass
+        return error_resp
+
+    record_rate_limits_from_response(upstream)
+
+    created = int(time.time())
+    if upstream.status_code >= 400:
+        try:
+            raw = upstream.content
+            err_body = json.loads(raw.decode("utf-8", errors="ignore")) if raw else {"raw": upstream.text}
+        except Exception:
+            err_body = {"raw": upstream.text}
+        if had_builtin_search_tools:
+            if verbose:
+                print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
+            base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
+            safe_choice = payload.get("tool_choice", "auto")
+            upstream2, err2 = start_upstream_request(
+                model,
+                input_items,
+                instructions=_instructions_for_model(model),
+                tools=base_tools_only,
+                tool_choice=safe_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                reasoning_param=reasoning_param,
+                service_tier=service_tier,
+                web_search_mode="disabled",
+            )
+            record_rate_limits_from_response(upstream2)
+            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
+                upstream = upstream2
+            else:
+                err = {
+                    "error": {
+                        "message": (err_body.get("error", {}) or {}).get("message", "Upstream error"),
+                        "code": "RESPONSES_TOOLS_REJECTED",
+                    }
+                }
+                if verbose:
+                    _log_json("OUT POST /v1/chat/completions", err)
+                return jsonify(err), (upstream2.status_code if upstream2 is not None else upstream.status_code)
+        else:
+            if verbose:
+                print("Upstream error status=", upstream.status_code)
+            err = {"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}}
+            if verbose:
+                _log_json("OUT POST /v1/chat/completions", err)
+            return jsonify(err), upstream.status_code
+
+    if is_stream:
+        if verbose:
+            print("OUT POST /v1/chat/completions (streaming response)")
+        stream_iter = sse_translate_chat(
+            upstream,
+            requested_model or model,
+            created,
+            verbose=verbose_obfuscation,
+            vlog=print if verbose_obfuscation else None,
+            reasoning_compat=reasoning_compat,
+            include_usage=include_usage,
+        )
+        stream_iter = _wrap_stream_logging("STREAM OUT /v1/chat/completions", stream_iter, verbose)
+        resp = Response(
+            stream_iter,
+            status=upstream.status_code,
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
         if service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-        if observed_service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
 
-    return build_openai_error_response(
-        last_error_info
-        or build_error_info(
-            source="codex-app-server",
-            phase="retry_exhausted",
-            raw_status=502,
-            raw_message="No candidate succeeded",
-            raw_body={"message": "No candidate succeeded"},
-        )
-    )
+    full_text = ""
+    reasoning_summary_text = ""
+    reasoning_full_text = ""
+    response_id = "chatcmpl"
+    tool_calls: List[Dict[str, Any]] = []
+    error_message: str | None = None
+    usage_obj: Dict[str, int] | None = None
+    observed_service_tier: str | None = None
+    completed_ok = False
+
+    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
+        try:
+            usage = (evt.get("response") or {}).get("usage")
+            if not isinstance(usage, dict):
+                return None
+            pt = int(usage.get("input_tokens") or 0)
+            ct = int(usage.get("output_tokens") or 0)
+            tt = int(usage.get("total_tokens") or (pt + ct))
+            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+        except Exception:
+            return None
+    try:
+        for raw in upstream.iter_lines(decode_unicode=False):
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):].strip()
+            if not data:
+                continue
+            if data == "[DONE]":
+                break
+            try:
+                evt = json.loads(data)
+            except Exception:
+                continue
+            kind = evt.get("type")
+            mu = _extract_usage(evt)
+            if mu:
+                usage_obj = mu
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
+                response_id = evt["response"].get("id") or response_id
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
+            if kind == "response.output_text.delta":
+                full_text += evt.get("delta") or ""
+            elif kind == "response.reasoning_summary_text.delta":
+                reasoning_summary_text += evt.get("delta") or ""
+            elif kind == "response.reasoning_text.delta":
+                reasoning_full_text += evt.get("delta") or ""
+            elif kind == "response.output_item.done":
+                item = evt.get("item") or {}
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    call_id = item.get("call_id") or item.get("id") or ""
+                    name = item.get("name") or ""
+                    args = item.get("arguments") or ""
+                    if not isinstance(args, str):
+                        try:
+                            args = json.dumps(args, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
+                    if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                        tool_calls.append(
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": args},
+                            }
+                        )
+            elif kind == "response.failed":
+                error_message = evt.get("response", {}).get("error", {}).get("message", "response.failed")
+            elif kind == "response.completed":
+                completed_ok = True
+                break
+    finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
+        elif error_message and hasattr(upstream, "mark_failure"):
+            try:
+                upstream.mark_failure(error_message)
+            except Exception:
+                pass
+        upstream.close()
+
+    if error_message:
+        status_code = int(getattr(upstream, "status_code", 502) or 502)
+        if status_code < 400:
+            status_code = 502
+        resp = make_response(jsonify({"error": {"message": error_message}}), status_code)
+        for k, v in build_cors_headers().items():
+            resp.headers.setdefault(k, v)
+        return resp
+
+    if tool_calls:
+        message = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+    else:
+        message = {"role": "assistant", "content": full_text if full_text else None}
+        message = apply_reasoning_to_message(message, reasoning_summary_text, reasoning_full_text, reasoning_compat)
+    completion = {
+        "id": response_id or "chatcmpl",
+        "object": "chat.completion",
+        "created": created,
+        "model": requested_model or model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }
+        ],
+        **({"usage": usage_obj} if usage_obj else {}),
+    }
+    if observed_service_tier:
+        completion["service_tier"] = observed_service_tier
+    if verbose:
+        _log_json("OUT POST /v1/chat/completions", completion)
+    resp = make_response(jsonify(completion), upstream.status_code)
+    if service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+    if observed_service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+    for k, v in build_cors_headers().items():
+        resp.headers.setdefault(k, v)
+    return resp
 
 
 @openai_bp.route("/v1/completions", methods=["POST"])
@@ -596,217 +510,139 @@ def completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
-    attempt_limit = _upstream_attempt_limit(stream_req)
-    last_error_info: Dict[str, Any] | None = None
-    for attempt_index in range(attempt_limit):
-        upstream, error_resp = start_upstream_request(
-            model,
-            input_items,
-            instructions=_instructions_for_model(model),
-            reasoning_param=reasoning_param,
-            service_tier=service_tier,
-        )
-        if error_resp is not None:
-            error_info = error_info_from_flask_response("chatcore", "request_start", error_resp)
-            last_error_info = error_info
-            if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                continue
-            if verbose:
-                try:
-                    body = error_resp.get_data(as_text=True)
-                    if body:
-                        try:
-                            parsed = json.loads(body)
-                        except Exception:
-                            parsed = body
-                        _log_json("OUT POST /v1/completions", parsed)
-                except Exception:
-                    pass
-            return build_openai_error_response(error_info)
-
-        record_rate_limits_from_response(upstream)
-        created = int(time.time())
-        if upstream.status_code >= 400:
-            error_info = error_info_from_http_response(
-                getattr(upstream, "chatmock_source", "upstream"),
-                "http",
-                upstream,
-            )
-            last_error_info = error_info
-            if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                continue
-            if verbose:
-                _log_json("OUT POST /v1/completions", {"error": error_info})
-            return build_openai_error_response(error_info)
-
-        if stream_req:
-            if verbose:
-                print("OUT POST /v1/completions (streaming response)")
-
-            def _retrying_text_stream():
-                current_upstream = upstream
-                current_created = created
-                for stream_attempt in range(attempt_limit - attempt_index):
-                    try:
-                        yield from sse_translate_text(
-                            current_upstream,
-                            requested_model or model,
-                            current_created,
-                            verbose=verbose_obfuscation,
-                            vlog=(print if verbose_obfuscation else None),
-                            include_usage=include_usage,
-                        )
-                        return
-                    except RetryableStreamError as exc:
-                        error_info = exc.error_info
-                        if stream_attempt + 1 >= (attempt_limit - attempt_index):
-                            payload = {"error": normalized_error_payload(error_info)}
-                            yield f"data: {json.dumps(payload)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
-                            return
-                        next_upstream, next_error = start_upstream_request(
-                            model,
-                            input_items,
-                            instructions=_instructions_for_model(model),
-                            reasoning_param=reasoning_param,
-                            service_tier=service_tier,
-                        )
-                        if next_error is not None:
-                            next_error_info = error_info_from_flask_response("chatcore", "request_start", next_error)
-                            payload = {"error": normalized_error_payload(next_error_info)}
-                            yield f"data: {json.dumps(payload)}\n\n".encode("utf-8")
-                            yield b"data: [DONE]\n\n"
-                            return
-                        current_upstream = next_upstream
-                        current_created = int(time.time())
-
-            stream_iter = _retrying_text_stream()
-            stream_iter = _wrap_stream_logging("STREAM OUT /v1/completions", stream_iter, verbose)
-            resp = Response(
-                stream_iter,
-                status=upstream.status_code,
-                mimetype="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
-            if service_tier:
-                resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-            for k, v in build_cors_headers().items():
-                resp.headers.setdefault(k, v)
-            return resp
-
-        full_text = ""
-        response_id = "cmpl"
-        usage_obj: Dict[str, int] | None = None
-        observed_service_tier: str | None = None
-        completed_ok = False
-        error_message: str | None = None
-        error_info: Dict[str, Any] | None = None
-
-        def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-            try:
-                usage = (evt.get("response") or {}).get("usage")
-                if not isinstance(usage, dict):
-                    return None
-                pt = int(usage.get("input_tokens") or 0)
-                ct = int(usage.get("output_tokens") or 0)
-                tt = int(usage.get("total_tokens") or (pt + ct))
-                return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-            except Exception:
-                return None
-
-        try:
-            for raw_line in upstream.iter_lines(decode_unicode=False):
-                if not raw_line:
-                    continue
-                line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: "):].strip()
-                if not data or data == "[DONE]":
-                    if data == "[DONE]":
-                        break
-                    continue
-                try:
-                    evt = json.loads(data)
-                except Exception:
-                    continue
-                if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                    response_id = evt["response"].get("id") or response_id
-                if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
-                    observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
-                mu = _extract_usage(evt)
-                if mu:
-                    usage_obj = mu
-                kind = evt.get("type")
-                if kind == "response.output_text.delta":
-                    full_text += evt.get("delta") or ""
-                elif kind == "response.failed":
-                    response_payload = evt.get("response") if isinstance(evt.get("response"), dict) else {}
-                    error_info = error_info_from_event_response(
-                        getattr(upstream, "chatmock_source", "upstream"),
-                        "stream",
-                        response_payload,
-                    )
-                    error_message = error_info.get("raw_message") or "response.failed"
-                    break
-                elif kind == "response.completed":
-                    completed_ok = True
-                    break
-        finally:
-            if completed_ok and hasattr(upstream, "mark_success"):
-                try:
-                    upstream.mark_success()
-                except Exception:
-                    pass
-            upstream.close()
-
-        if error_message:
-            if error_info is None:
-                error_info = build_error_info(
-                    source=getattr(upstream, "chatmock_source", "upstream"),
-                    phase="stream",
-                    raw_status=int(getattr(upstream, "status_code", 502) or 502),
-                    raw_message=error_message,
-                    raw_body={"message": error_message},
-                )
-            last_error_info = error_info
-            if should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                continue
-            return build_openai_error_response(error_info)
-
-        completion = {
-            "id": response_id or "cmpl",
-            "object": "text_completion",
-            "created": created,
-            "model": requested_model or model,
-            "choices": [
-                {"index": 0, "text": full_text, "finish_reason": "stop", "logprobs": None}
-            ],
-            **({"usage": usage_obj} if usage_obj else {}),
-        }
-        if observed_service_tier:
-            completion["service_tier"] = observed_service_tier
+    upstream, error_resp = start_upstream_request(
+        model,
+        input_items,
+        instructions=_instructions_for_model(model),
+        reasoning_param=reasoning_param,
+        service_tier=service_tier,
+    )
+    if error_resp is not None:
         if verbose:
-            _log_json("OUT POST /v1/completions", completion)
-        resp = make_response(jsonify(completion), upstream.status_code)
+            try:
+                body = error_resp.get_data(as_text=True)
+                if body:
+                    try:
+                        parsed = json.loads(body)
+                    except Exception:
+                        parsed = body
+                    _log_json("OUT POST /v1/completions", parsed)
+            except Exception:
+                pass
+        return error_resp
+
+    record_rate_limits_from_response(upstream)
+
+    created = int(time.time())
+    if upstream.status_code >= 400:
+        try:
+            err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
+        except Exception:
+            err_body = {"raw": upstream.text}
+        err = {"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}}
+        if verbose:
+            _log_json("OUT POST /v1/completions", err)
+        return jsonify(err), upstream.status_code
+
+    if stream_req:
+        if verbose:
+            print("OUT POST /v1/completions (streaming response)")
+        stream_iter = sse_translate_text(
+            upstream,
+            requested_model or model,
+            created,
+            verbose=verbose_obfuscation,
+            vlog=(print if verbose_obfuscation else None),
+            include_usage=include_usage,
+        )
+        stream_iter = _wrap_stream_logging("STREAM OUT /v1/completions", stream_iter, verbose)
+        resp = Response(
+            stream_iter,
+            status=upstream.status_code,
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
         if service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-        if observed_service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
 
-    return build_openai_error_response(
-        last_error_info
-        or build_error_info(
-            source="codex-app-server",
-            phase="retry_exhausted",
-            raw_status=502,
-            raw_message="No candidate succeeded",
-            raw_body={"message": "No candidate succeeded"},
-        )
-    )
+    full_text = ""
+    response_id = "cmpl"
+    usage_obj: Dict[str, int] | None = None
+    observed_service_tier: str | None = None
+    completed_ok = False
+    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
+        try:
+            usage = (evt.get("response") or {}).get("usage")
+            if not isinstance(usage, dict):
+                return None
+            pt = int(usage.get("input_tokens") or 0)
+            ct = int(usage.get("output_tokens") or 0)
+            tt = int(usage.get("total_tokens") or (pt + ct))
+            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+        except Exception:
+            return None
+    try:
+        for raw_line in upstream.iter_lines(decode_unicode=False):
+            if not raw_line:
+                continue
+            line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):].strip()
+            if not data or data == "[DONE]":
+                if data == "[DONE]":
+                    break
+                continue
+            try:
+                evt = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
+                response_id = evt["response"].get("id") or response_id
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
+            mu = _extract_usage(evt)
+            if mu:
+                usage_obj = mu
+            kind = evt.get("type")
+            if kind == "response.output_text.delta":
+                full_text += evt.get("delta") or ""
+            elif kind == "response.completed":
+                completed_ok = True
+                break
+    finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
+        upstream.close()
+
+    completion = {
+        "id": response_id or "cmpl",
+        "object": "text_completion",
+        "created": created,
+        "model": requested_model or model,
+        "choices": [
+            {"index": 0, "text": full_text, "finish_reason": "stop", "logprobs": None}
+        ],
+        **({"usage": usage_obj} if usage_obj else {}),
+    }
+    if observed_service_tier:
+        completion["service_tier"] = observed_service_tier
+    if verbose:
+        _log_json("OUT POST /v1/completions", completion)
+    resp = make_response(jsonify(completion), upstream.status_code)
+    if service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+    if observed_service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+    for k, v in build_cors_headers().items():
+        resp.headers.setdefault(k, v)
+    return resp
 
 
 @openai_bp.route("/v1/models", methods=["GET"])

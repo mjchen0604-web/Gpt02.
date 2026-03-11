@@ -27,7 +27,7 @@ _VALID_ROUTING_STRATEGIES = {"round-robin", "random", "first"}
 _VALID_REASONING_EFFORT = {"minimal", "low", "medium", "high", "xhigh"}
 _VALID_REASONING_SUMMARY = {"auto", "concise", "detailed", "none"}
 _VALID_REASONING_COMPAT = {"legacy", "o3", "think-tags", "current"}
-_VALID_UPSTREAM_MODES = {"codex-app-server"}
+_VALID_UPSTREAM_MODES = {"auto", "chatgpt-backend", "codex-app-server"}
 _VALID_SERVICE_TIERS = {"", "fast", "flex", "priority"}
 
 

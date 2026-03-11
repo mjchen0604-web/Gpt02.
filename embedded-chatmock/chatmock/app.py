@@ -37,7 +37,9 @@ def create_app(
     if normalized_service_tier in ("off", "none", "unset"):
         normalized_service_tier = None
     normalized_upstream_mode = (
-        "codex-app-server"
+        upstream_mode.strip().lower()
+        if isinstance(upstream_mode, str) and upstream_mode.strip()
+        else UPSTREAM_MODE_DEFAULT
     )
     normalized_codex_app_server_url = (
         codex_app_server_url.strip()

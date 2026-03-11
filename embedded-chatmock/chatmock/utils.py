@@ -14,24 +14,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from .config import CLIENT_ID_DEFAULT, OAUTH_TOKEN_URL
-from .upstream_errors import classify_error
-from .upstream_errors import error_info_from_event_response, normalized_error_payload, should_retry_next_candidate
 
 
 _AUTH_POOL_RR_LOCK = threading.Lock()
 _AUTH_POOL_RR_INDEX = 0
-_AUTH_POOL_STATE_LOCK = threading.RLock()
+_AUTH_POOL_STATE_LOCK = threading.Lock()
 _AUTH_POOL_STATE: Dict[str, Dict[str, Any]] = {}
 
 
 def eprint(*args, **kwargs) -> None:
     print(*args, file=sys.stderr, **kwargs)
-
-
-class RetryableStreamError(RuntimeError):
-    def __init__(self, error_info: Dict[str, Any]) -> None:
-        self.error_info = error_info
-        super().__init__(str((error_info or {}).get("raw_message") or "retryable stream failure"))
 
 
 def get_home_dir() -> str:
@@ -696,43 +688,25 @@ def _get_cooldown_until(label: str) -> float:
             return 0.0
 
 
-def _set_auth_pool_state(
-    label: str,
-    *,
-    status: str,
-    cooldown_until: float,
-    failures: int,
-    last_status: int | None,
-    last_error: str,
-    classification: str,
-    raw_code: str | None = None,
-    raw_message: str | None = None,
-) -> None:
-    with _AUTH_POOL_STATE_LOCK:
-        state = dict(_AUTH_POOL_STATE.get(label) or {})
-        state["status"] = status
-        state["cooldown_until"] = cooldown_until
-        state["failures"] = failures
-        state["last_status"] = last_status
-        state["last_error"] = last_error
-        state["last_classification"] = classification
-        state["last_raw_code"] = raw_code or ""
-        state["last_raw_message"] = raw_message or last_error or ""
-        state["updated_at"] = time.time()
-        _AUTH_POOL_STATE[label] = state
-
-
 def _apply_account_cooldown(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    if len(candidates) <= 1:
+        return candidates
     now = time.time()
     available: List[Dict[str, str]] = []
+    cooling: List[tuple[float, Dict[str, str]]] = []
     for candidate in candidates:
         label = candidate.get("label") or ""
         cooldown_until = _get_cooldown_until(label)
-        if cooldown_until <= now:
+        if cooldown_until > now:
+            cooling.append((cooldown_until, candidate))
+        else:
             available.append(candidate)
     if available:
         return available
-    return []
+    if not cooling:
+        return candidates
+    cooling.sort(key=lambda x: x[0])
+    return [item[1] for item in cooling]
 
 
 def mark_chatgpt_auth_result(
@@ -741,10 +715,6 @@ def mark_chatgpt_auth_result(
     success: bool,
     status_code: int | None = None,
     error_message: str | None = None,
-    classification: str | None = None,
-    cooldown_seconds: int | None = None,
-    raw_code: str | None = None,
-    raw_message: str | None = None,
 ) -> None:
     if not isinstance(label, str) or not label:
         return
@@ -753,85 +723,28 @@ def mark_chatgpt_auth_result(
     with _AUTH_POOL_STATE_LOCK:
         state = dict(_AUTH_POOL_STATE.get(label) or {})
         if success:
-            _set_auth_pool_state(
-                label,
-                status="ready",
-                cooldown_until=0.0,
-                failures=0,
-                last_status=status_code if isinstance(status_code, int) else 200,
-                last_error="",
-                classification="ready",
-                raw_code=raw_code,
-                raw_message=raw_message,
-            )
+            state["failures"] = 0
+            state["cooldown_until"] = 0.0
+            state["last_status"] = status_code if isinstance(status_code, int) else 200
+            state["last_error"] = ""
+            state["updated_at"] = now
+            _AUTH_POOL_STATE[label] = state
             return
 
         failures = int(state.get("failures") or 0) + 1
-        category = (classification or "").strip() or "generic_failure"
-        if isinstance(cooldown_seconds, int) and cooldown_seconds > 0:
-            cooldown = cooldown_seconds
-            state_status = "cooldown_insufficient_balance" if category == "insufficient_balance" else "temporary_failure"
-        elif isinstance(status_code, int) and status_code in (401, 403):
+        if isinstance(status_code, int) and status_code in (401, 403):
             base = 5
-            cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
-            state_status = "temporary_failure"
         elif isinstance(status_code, int) and status_code == 429:
             base = 2
-            cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
-            state_status = "temporary_failure"
         else:
             base = 1
-            cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
-            state_status = "temporary_failure"
+        cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
         state["failures"] = failures
+        state["cooldown_until"] = now + float(cooldown)
+        state["last_status"] = status_code
+        state["last_error"] = error_message or ""
+        state["updated_at"] = now
         _AUTH_POOL_STATE[label] = state
-        _set_auth_pool_state(
-            label,
-            status=state_status,
-            cooldown_until=now + float(cooldown),
-            failures=failures,
-            last_status=status_code,
-            last_error=error_message or "",
-            classification=category,
-            raw_code=raw_code,
-            raw_message=raw_message,
-        )
-
-
-def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, Any]) -> str:
-    label = str(candidate.get("label") or "").strip()
-    classification = classify_error(info)
-    raw_status = info.get("raw_status") if isinstance(info.get("raw_status"), int) else None
-    raw_code = info.get("raw_code") if isinstance(info.get("raw_code"), str) else None
-    raw_message = info.get("raw_message") if isinstance(info.get("raw_message"), str) else None
-
-    if classification == "insufficient_balance":
-        mark_chatgpt_auth_result(
-            label,
-            success=False,
-            status_code=raw_status,
-            error_message=raw_message,
-            classification=classification,
-            cooldown_seconds=5 * 60 * 60,
-            raw_code=raw_code,
-            raw_message=raw_message,
-        )
-        return classification
-
-    if classification == "account_invalid":
-        remove_chatgpt_auth_candidate(candidate, reason=raw_message or "Account invalid")
-        return classification
-
-    mark_chatgpt_auth_result(
-        label,
-        success=False,
-        status_code=raw_status,
-        error_message=raw_message,
-        classification=classification,
-        raw_code=raw_code,
-        raw_message=raw_message,
-    )
-    return classification
 
 
 def get_chatgpt_auth_pool_state() -> Dict[str, Dict[str, Any]]:
@@ -854,13 +767,9 @@ def _state_for_label(label: str) -> Dict[str, Any]:
     cooldown_until = float(state.get("cooldown_until") or 0.0)
     remaining = max(0, int(cooldown_until - now))
     return {
-        "status": state.get("status") or "ready",
         "failures": int(state.get("failures") or 0),
         "last_status": state.get("last_status"),
         "last_error": state.get("last_error") or "",
-        "last_classification": state.get("last_classification") or "",
-        "last_raw_code": state.get("last_raw_code") or "",
-        "last_raw_message": state.get("last_raw_message") or "",
         "cooldown_remaining": remaining,
         "updated_at": state.get("updated_at"),
     }
@@ -1071,7 +980,6 @@ def sse_translate_chat(
     saw_any_summary = False
     pending_summary_paragraph = False
     upstream_usage = None
-    has_visible_output = False
     ws_state: dict[str, Any] = {}
     ws_index: dict[str, int] = {}
     ws_next_index: int = 0
@@ -1173,7 +1081,6 @@ def sse_translate_chat(
                     think_open = False
                     think_closed = True
                 saw_output = True
-                has_visible_output = True
                 chunk = {
                     "id": response_id,
                     "object": "chat.completion.chunk",
@@ -1226,7 +1133,6 @@ def sse_translate_chat(
                             ],
                         }
                         yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
-                        has_visible_output = True
 
                         finish_chunk = {
                             "id": response_id,
@@ -1347,17 +1253,9 @@ def sse_translate_chat(
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
                 sent_stop_chunk = True
             elif kind == "response.failed":
-                error_info = error_info_from_event_response(
-                    getattr(upstream, "chatmock_source", "upstream"),
-                    "stream",
-                    evt.get("response"),
-                )
-                if not has_visible_output and should_retry_next_candidate(error_info):
-                    raise RetryableStreamError(error_info)
-                chunk = {"error": normalized_error_payload(error_info)}
+                err = evt.get("response", {}).get("error", {}).get("message", "response.failed")
+                chunk = {"error": {"message": err}}
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                yield b"data: [DONE]\n\n"
-                break
             elif kind == "response.completed":
                 m = _extract_usage(evt)
                 if m:
@@ -1406,7 +1304,6 @@ def sse_translate_chat(
 def sse_translate_text(upstream, model: str, created: int, verbose: bool = False, vlog=None, *, include_usage: bool = False):
     response_id = "cmpl-stream"
     upstream_usage = None
-    has_visible_output = False
     
     def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
         try:
@@ -1449,7 +1346,6 @@ def sse_translate_text(upstream, model: str, created: int, verbose: bool = False
                 response_id = evt["response"].get("id") or response_id
             if kind == "response.output_text.delta":
                 delta_text = evt.get("delta") or ""
-                has_visible_output = has_visible_output or bool(delta_text)
                 chunk = {
                     "id": response_id,
                     "object": "text_completion.chunk",
@@ -1467,18 +1363,6 @@ def sse_translate_text(upstream, model: str, created: int, verbose: bool = False
                     "choices": [{"index": 0, "text": "", "finish_reason": "stop"}],
                 }
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-            elif kind == "response.failed":
-                error_info = error_info_from_event_response(
-                    getattr(upstream, "chatmock_source", "upstream"),
-                    "stream",
-                    evt.get("response"),
-                )
-                if not has_visible_output and should_retry_next_candidate(error_info):
-                    raise RetryableStreamError(error_info)
-                chunk = {"error": normalized_error_payload(error_info)}
-                yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                yield b"data: [DONE]\n\n"
-                break
             elif kind == "response.completed":
                 m = _extract_usage(evt)
                 if m:

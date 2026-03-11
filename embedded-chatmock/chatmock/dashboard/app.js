@@ -166,16 +166,13 @@ function renderAccounts(payload) {
               <div class="account-file">${acc.label || "-"}</div>
               <div class="account-mail">${acc.source || "-"}</div>
             </div>
-            <div class="account-file">status: ${acc.status || "ready"} / ${acc.last_status ?? "-"}</div>
+            <div class="account-file">status: ${acc.last_status ?? "-"}</div>
           </div>
           <div class="account-meta">
             <div>account: ${acc.account_id || "-"}</div>
             <div>refresh: ${acc.last_refresh || "-"}</div>
             <div>failures: ${acc.failures || 0}</div>
             <div>cooldown: ${acc.cooldown_remaining || 0}s</div>
-            <div>classification: ${acc.last_classification || "-"}</div>
-            <div>raw code: ${acc.last_raw_code || "-"}</div>
-            <div>raw message: ${acc.last_raw_message || "-"}</div>
             <div>fast: ${acc.fast_status || "-"} ${acc.fast_port ? `@${acc.fast_port}` : ""}</div>
             <div>fast requests: ${acc.fast_request_successes || 0}/${acc.fast_request_count || 0}</div>
           </div>
@@ -514,6 +511,7 @@ async function init() {
 }
 
 init();
+
 
 
 
