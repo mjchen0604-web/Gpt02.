@@ -8,7 +8,7 @@ import requests
 from flask import Response, current_app, jsonify, make_response
 
 from .config import CHATGPT_RESPONSES_URL
-from .codex_app_server import connect_codex_app_server
+from .codex_app_server import CodexAppServerError, connect_codex_app_server
 from .http import build_cors_headers
 from .reasoning import split_model_alias
 from .session import ensure_session_id
@@ -157,11 +157,34 @@ def _start_codex_app_server_request(
             )
         except Exception as exc:
             last_error = exc
+            status_code = exc.status_code if isinstance(exc, CodexAppServerError) else None
             if manager is not None and hasattr(manager, "mark_request_result"):
                 try:
-                    manager.mark_request_result(candidate_label, success=False, error_message=str(exc))
+                    manager.mark_request_result(candidate_label, success=False, error_message=str(exc), status_code=status_code)
                 except Exception:
                     pass
+            if isinstance(status_code, int) and status_code == 402:
+                removed = False
+                if manager is not None and hasattr(manager, "remove_auth_for_label"):
+                    try:
+                        removed = bool(
+                            manager.remove_auth_for_label(
+                                candidate_label,
+                                reason=f"HTTP 402 while requesting model {model} via codex-app-server",
+                            )
+                        )
+                    except Exception:
+                        removed = False
+                if not removed and candidate.get("auth_path"):
+                    remove_chatgpt_auth_candidate(
+                        {
+                            "label": candidate_label,
+                            "source_kind": "auth_file",
+                            "source_path": str(candidate.get("auth_path") or ""),
+                            "source_index": None,
+                        },
+                        reason=f"HTTP 402 while requesting model {model} via codex-app-server",
+                    )
             if verbose:
                 print(f"codex app-server upstream failed for {candidate_label} ({candidate_url}): {exc}")
             continue

@@ -656,7 +656,10 @@ def messages() -> Response:
         upstream.close()
 
     if error_message:
-        return _error_response(error_message, 502, "api_error")
+        status_code = int(getattr(upstream, "status_code", 502) or 502)
+        if status_code < 400:
+            status_code = 502
+        return _error_response(error_message, status_code, "api_error")
 
     content: List[Dict[str, Any]] = []
     stop_reason = "end_turn"

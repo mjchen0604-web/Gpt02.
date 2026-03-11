@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+from .utils import remove_chatgpt_auth_candidate
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
@@ -122,18 +124,19 @@ class ManagedCodexUpstream:
     def mark_success(self) -> None:
         self._mark(True)
 
-    def mark_failure(self, error_message: str | None = None) -> None:
-        self._mark(False, error_message=error_message)
+    def mark_failure(self, error_message: str | None = None, status_code: int | None = None) -> None:
+        self._mark(False, error_message=error_message, status_code=status_code)
 
-    def _mark(self, success: bool, *, error_message: str | None = None) -> None:
+    def _mark(self, success: bool, *, error_message: str | None = None, status_code: int | None = None) -> None:
         if self._marked:
             return
         self._marked = True
-        self._pool.mark_request_result(self._label, success=success, error_message=error_message)
+        self._pool.mark_request_result(self._label, success=success, error_message=error_message, status_code=status_code)
 
     def iter_lines(self, decode_unicode: bool = False):
         saw_completed = False
         error_message: str | None = None
+        status_code: int | None = None
         try:
             for raw in self._upstream.iter_lines(decode_unicode=decode_unicode):
                 line = raw
@@ -149,11 +152,15 @@ class ManagedCodexUpstream:
                         if isinstance(event, dict):
                             kind = event.get("type")
                             if kind == "response.failed":
+                                response = event.get("response") if isinstance(event.get("response"), dict) else {}
                                 error_message = (
-                                    ((event.get("response") or {}).get("error") or {}).get("message")
+                                    ((response.get("error") or {}).get("message"))
                                     or "response.failed"
                                 )
-                                self._mark(False, error_message=error_message)
+                                maybe_status = response.get("status")
+                                if isinstance(maybe_status, int):
+                                    status_code = maybe_status
+                                self._mark(False, error_message=error_message, status_code=status_code)
                             elif kind == "response.completed":
                                 saw_completed = True
                 yield raw
@@ -161,9 +168,9 @@ class ManagedCodexUpstream:
                 if saw_completed:
                     self._mark(True)
                 else:
-                    self._mark(False, error_message=error_message or "stream ended before response.completed")
+                    self._mark(False, error_message=error_message or "stream ended before response.completed", status_code=status_code)
         except Exception as exc:
-            self._mark(False, error_message=str(exc))
+            self._mark(False, error_message=str(exc), status_code=status_code)
             raise
 
 
@@ -756,14 +763,40 @@ class CodexAppServerPoolManager:
             instance = self._instances.get(label)
             if instance is None:
                 continue
-            out.append({"label": label, "url": instance.url})
+            out.append({"label": label, "url": instance.url, "auth_path": str(instance.auth_path)})
         return out
 
-    def mark_request_result(self, label: str, *, success: bool, error_message: str | None = None) -> None:
+    def remove_auth_for_label(self, label: str, *, reason: str = "") -> bool:
+        instance = self._instances.get(label)
+        auth_path = str(instance.auth_path) if instance is not None else ""
+        if instance is not None:
+            try:
+                instance.stop()
+            except Exception:
+                pass
+        removed = remove_chatgpt_auth_candidate(
+            {
+                "label": label,
+                "source_kind": "auth_file",
+                "source_path": auth_path,
+                "source_index": None,
+            },
+            reason=reason,
+        )
+        if removed:
+            with self._lock:
+                self._instances.pop(label, None)
+                self._request_state.pop(label, None)
+                self._instance_order = [item for item in self._instance_order if item != label]
+            self._sync_instances()
+        return removed
+
+    def mark_request_result(self, label: str, *, success: bool, error_message: str | None = None, status_code: int | None = None) -> None:
         if not isinstance(label, str) or not label:
             return
         now = time.time()
         max_retry_interval = max(5, int(os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "30"))
+        should_remove = False
         with self._lock:
             state = dict(self._request_state.get(label) or {})
             state["requests_total"] = int(state.get("requests_total") or 0) + 1
@@ -778,15 +811,28 @@ class CodexAppServerPoolManager:
                 self._request_state[label] = state
                 self._append_log(f"request result: {label} success")
                 return
-            failures = int(state.get("failures") or 0) + 1
-            cooldown = min(max_retry_interval, 2 ** max(1, failures - 1))
-            state["failures"] = failures
-            state["cooldown_until"] = now + float(cooldown)
-            state["last_error"] = error_message or ""
-            state["updated_at"] = now
-            state["last_failure_at"] = _utc_now()
-            self._request_state[label] = state
+            if isinstance(status_code, int) and status_code == 402:
+                state["failures"] = int(state.get("failures") or 0) + 1
+                state["cooldown_until"] = 0.0
+                state["last_error"] = error_message or ""
+                state["last_status"] = status_code
+                state["updated_at"] = now
+                state["last_failure_at"] = _utc_now()
+                self._request_state[label] = state
+                should_remove = True
+            else:
+                failures = int(state.get("failures") or 0) + 1
+                cooldown = min(max_retry_interval, 2 ** max(1, failures - 1))
+                state["failures"] = failures
+                state["cooldown_until"] = now + float(cooldown)
+                state["last_error"] = error_message or ""
+                state["last_status"] = status_code
+                state["updated_at"] = now
+                state["last_failure_at"] = _utc_now()
+                self._request_state[label] = state
             self._append_log(f"request result: {label} failure ({error_message or 'unknown error'})")
+        if should_remove:
+            self.remove_auth_for_label(label, reason=error_message or "HTTP 402 from codex app-server")
 
     def wrap_upstream(self, label: str, upstream: Any) -> ManagedCodexUpstream:
         return ManagedCodexUpstream(upstream, self, label)

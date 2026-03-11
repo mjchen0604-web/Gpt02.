@@ -429,7 +429,10 @@ def chat_completions() -> Response:
         upstream.close()
 
     if error_message:
-        resp = make_response(jsonify({"error": {"message": error_message}}), 502)
+        status_code = int(getattr(upstream, "status_code", 502) or 502)
+        if status_code < 400:
+            status_code = 502
+        resp = make_response(jsonify({"error": {"message": error_message}}), status_code)
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
