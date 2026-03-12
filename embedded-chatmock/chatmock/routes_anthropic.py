@@ -15,7 +15,16 @@ from .reasoning import (
     extract_reasoning_from_model_name,
     extract_service_tier_from_model_name,
 )
+from .upstream_errors import (
+    build_anthropic_error_response,
+    build_error_info,
+    error_info_from_event_response,
+    error_info_from_flask_response,
+    error_info_from_http_response,
+    should_retry_next_candidate,
+)
 from .upstream import normalize_model_name, start_upstream_request
+from .utils import get_effective_chatgpt_auth_candidates
 
 
 anthropic_bp = Blueprint("anthropic", __name__)
@@ -38,6 +47,23 @@ def _instructions_for_model(model: str) -> str:
         if isinstance(codex, str) and codex.strip():
             return codex
     return base
+
+
+def _upstream_attempt_limit(is_stream: bool, configured_upstream: str) -> int:
+    if is_stream:
+        return 1
+    if configured_upstream == "chatgpt-backend":
+        try:
+            return max(1, len(get_effective_chatgpt_auth_candidates(ensure_fresh=True) or []))
+        except Exception:
+            return 1
+    manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
+    if manager is not None and hasattr(manager, "get_request_candidates"):
+        try:
+            return max(1, len(manager.get_request_candidates() or []))
+        except Exception:
+            return 1
+    return 1
 
 
 def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None = None) -> str | None:
@@ -468,8 +494,9 @@ def _anthropic_stream(upstream, model_out: str, verbose: bool):
                 continue
 
             if kind == "response.failed":
-                message = (evt.get("response", {}) or {}).get("error", {}).get("message", "response.failed")
-                yield _emit("error", {"type": "error", "error": {"type": "api_error", "message": message}})
+                error_info = error_info_from_event_response("codex-app-server", "stream", evt.get("response"))
+                payload = build_anthropic_error_response(error_info).get_json()
+                yield _emit("error", payload)
                 return
 
             if kind == "response.completed":
@@ -545,43 +572,56 @@ def messages() -> Response:
         allowed_efforts=allowed_efforts_for_model(model),
     )
 
-    upstream, error_resp = start_upstream_request(
-        model,
-        input_items,
-        instructions=instructions,
-        tools=tools_responses,
-        tool_choice=tool_choice,
-        parallel_tool_calls=parallel_tool_calls,
-        reasoning_param=reasoning_param,
-        service_tier=service_tier,
-    )
-    if error_resp is not None:
-        status = int(getattr(error_resp, "status_code", 401) or 401)
-        body = error_resp.get_data(as_text=True) if hasattr(error_resp, "get_data") else ""
-        message = "upstream auth error"
-        try:
-            parsed = json.loads(body) if body else {}
-            message = (parsed.get("error") or {}).get("message") or message
-        except Exception:
-            pass
-        return _error_response(message, status, "authentication_error" if status in (401, 403) else "api_error")
-
-    record_rate_limits_from_response(upstream)
-    if upstream.status_code >= 400:
-        message = "upstream error"
-        try:
-            parsed = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {}
-            message = (parsed.get("error") or {}).get("message") or message
-        except Exception:
-            pass
-        try:
-            upstream.close()
-        except Exception:
-            pass
-        return _error_response(message, upstream.status_code, "api_error")
-
     model_out = requested_model or model
-    if bool(payload.get("stream")):
+    is_stream = bool(payload.get("stream"))
+    configured_upstream = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
+    attempt_limit = _upstream_attempt_limit(is_stream, configured_upstream)
+    last_error_info: Dict[str, Any] | None = None
+    upstream = None
+    for attempt_index in range(attempt_limit):
+        upstream, error_resp = start_upstream_request(
+            model,
+            input_items,
+            instructions=instructions,
+            tools=tools_responses,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            reasoning_param=reasoning_param,
+            service_tier=service_tier,
+        )
+        if error_resp is not None:
+            error_info = error_info_from_flask_response("chatcore", "request_start", error_resp)
+            last_error_info = error_info
+            if not is_stream and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
+                continue
+            return build_anthropic_error_response(error_info)
+
+        record_rate_limits_from_response(upstream)
+        if upstream.status_code >= 400:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+            error_info = error_info_from_http_response(getattr(upstream, "chatmock_source", "upstream"), "http", upstream)
+            last_error_info = error_info
+            if not is_stream and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
+                continue
+            return build_anthropic_error_response(error_info)
+        break
+
+    if upstream is None:
+        return build_anthropic_error_response(
+            last_error_info
+            or build_error_info(
+                source="chatcore",
+                phase="retry_exhausted",
+                raw_status=502,
+                raw_message="No candidate succeeded",
+                raw_body={"message": "No candidate succeeded"},
+            )
+        )
+
+    if is_stream:
         resp = Response(
             _anthropic_stream(upstream, model_out, verbose),
             status=upstream.status_code,
@@ -600,6 +640,7 @@ def messages() -> Response:
     usage_out = 0
     response_id = f"msg_{uuid.uuid4().hex}"
     error_message: str | None = None
+    error_info: Dict[str, Any] | None = None
     observed_service_tier: str | None = None
     completed_ok = False
     try:
@@ -638,7 +679,12 @@ def messages() -> Response:
                 if tool_payload is not None:
                     tool_calls.append(tool_payload)
             elif kind == "response.failed":
-                error_message = (evt.get("response", {}) or {}).get("error", {}).get("message", "response.failed")
+                error_info = error_info_from_event_response(
+                    getattr(upstream, "chatmock_source", "upstream"),
+                    "stream",
+                    evt.get("response"),
+                )
+                error_message = error_info.get("raw_message") or "response.failed"
             elif kind == "response.completed":
                 completed_ok = True
                 break
@@ -656,7 +702,15 @@ def messages() -> Response:
         upstream.close()
 
     if error_message:
-        return _error_response(error_message, 502, "api_error")
+        if error_info is None:
+            error_info = build_error_info(
+                source=getattr(upstream, "chatmock_source", "upstream"),
+                phase="stream",
+                raw_status=int(getattr(upstream, "status_code", 502) or 502),
+                raw_message=error_message,
+                raw_body={"message": error_message},
+            )
+        return build_anthropic_error_response(error_info)
 
     content: List[Dict[str, Any]] = []
     stop_reason = "end_turn"

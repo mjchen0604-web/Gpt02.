@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+from .codex_app_server import CodexAppServerError
+from .upstream_errors import classify_error, error_info_from_event_response
+from .utils import handle_chatgpt_candidate_failure, mark_chatgpt_auth_result, remove_chatgpt_auth_candidate
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
@@ -122,18 +126,40 @@ class ManagedCodexUpstream:
     def mark_success(self) -> None:
         self._mark(True)
 
-    def mark_failure(self, error_message: str | None = None) -> None:
-        self._mark(False, error_message=error_message)
+    def mark_failure(self, error_message: str | None = None, status_code: int | None = None) -> None:
+        self._mark(False, error_message=error_message, status_code=status_code)
 
-    def _mark(self, success: bool, *, error_message: str | None = None) -> None:
+    def mark_failure_info(self, error_info: dict[str, Any]) -> None:
+        self._mark(
+            False,
+            error_message=str(error_info.get("raw_message") or ""),
+            status_code=error_info.get("raw_status") if isinstance(error_info.get("raw_status"), int) else None,
+            error_info=error_info,
+        )
+
+    def _mark(
+        self,
+        success: bool,
+        *,
+        error_message: str | None = None,
+        status_code: int | None = None,
+        error_info: dict[str, Any] | None = None,
+    ) -> None:
         if self._marked:
             return
         self._marked = True
-        self._pool.mark_request_result(self._label, success=success, error_message=error_message)
+        self._pool.mark_request_result(
+            self._label,
+            success=success,
+            error_message=error_message,
+            status_code=status_code,
+            error_info=error_info,
+        )
 
     def iter_lines(self, decode_unicode: bool = False):
         saw_completed = False
         error_message: str | None = None
+        status_code: int | None = None
         try:
             for raw in self._upstream.iter_lines(decode_unicode=decode_unicode):
                 line = raw
@@ -149,11 +175,17 @@ class ManagedCodexUpstream:
                         if isinstance(event, dict):
                             kind = event.get("type")
                             if kind == "response.failed":
+                                response = event.get("response") if isinstance(event.get("response"), dict) else {}
                                 error_message = (
-                                    ((event.get("response") or {}).get("error") or {}).get("message")
+                                    ((response.get("error") or {}).get("message"))
                                     or "response.failed"
                                 )
-                                self._mark(False, error_message=error_message)
+                                maybe_status = response.get("status")
+                                if isinstance(maybe_status, int):
+                                    status_code = maybe_status
+                                self.mark_failure_info(
+                                    error_info_from_event_response("codex-app-server", "stream", response)
+                                )
                             elif kind == "response.completed":
                                 saw_completed = True
                 yield raw
@@ -161,9 +193,12 @@ class ManagedCodexUpstream:
                 if saw_completed:
                     self._mark(True)
                 else:
-                    self._mark(False, error_message=error_message or "stream ended before response.completed")
+                    self._mark(False, error_message=error_message or "stream ended before response.completed", status_code=status_code)
         except Exception as exc:
-            self._mark(False, error_message=str(exc))
+            if isinstance(exc, CodexAppServerError) and isinstance(getattr(exc, "error_info", None), dict):
+                self.mark_failure_info(exc.error_info)
+            else:
+                self._mark(False, error_message=str(exc), status_code=status_code)
             raise
 
 
@@ -756,14 +791,48 @@ class CodexAppServerPoolManager:
             instance = self._instances.get(label)
             if instance is None:
                 continue
-            out.append({"label": label, "url": instance.url})
+            out.append({"label": label, "url": instance.url, "auth_path": str(instance.auth_path)})
         return out
 
-    def mark_request_result(self, label: str, *, success: bool, error_message: str | None = None) -> None:
+    def remove_auth_for_label(self, label: str, *, reason: str = "") -> bool:
+        instance = self._instances.get(label)
+        auth_path = str(instance.auth_path) if instance is not None else ""
+        if instance is not None:
+            try:
+                instance.stop()
+            except Exception:
+                pass
+        removed = remove_chatgpt_auth_candidate(
+            {
+                "label": label,
+                "source_kind": "auth_file",
+                "source_path": auth_path,
+                "source_index": None,
+            },
+            reason=reason,
+        )
+        if removed:
+            with self._lock:
+                self._instances.pop(label, None)
+                self._request_state.pop(label, None)
+                self._instance_order = [item for item in self._instance_order if item != label]
+            self._sync_instances()
+        return removed
+
+    def mark_request_result(
+        self,
+        label: str,
+        *,
+        success: bool,
+        error_message: str | None = None,
+        status_code: int | None = None,
+        error_info: dict[str, Any] | None = None,
+    ) -> None:
         if not isinstance(label, str) or not label:
             return
         now = time.time()
         max_retry_interval = max(5, int(os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "30"))
+        classification = classify_error(error_info or {"raw_status": status_code, "raw_message": error_message})
         with self._lock:
             state = dict(self._request_state.get(label) or {})
             state["requests_total"] = int(state.get("requests_total") or 0) + 1
@@ -775,18 +844,74 @@ class CodexAppServerPoolManager:
                 state["updated_at"] = now
                 state["successes_total"] = int(state.get("successes_total") or 0) + 1
                 state["last_success_at"] = _utc_now()
+                state["status"] = "ready"
+                state["last_classification"] = "ready"
                 self._request_state[label] = state
+                mark_chatgpt_auth_result(label, success=True, status_code=status_code)
                 self._append_log(f"request result: {label} success")
                 return
-            failures = int(state.get("failures") or 0) + 1
-            cooldown = min(max_retry_interval, 2 ** max(1, failures - 1))
-            state["failures"] = failures
-            state["cooldown_until"] = now + float(cooldown)
-            state["last_error"] = error_message or ""
-            state["updated_at"] = now
-            state["last_failure_at"] = _utc_now()
-            self._request_state[label] = state
+            if classification == "insufficient_balance":
+                state["failures"] = int(state.get("failures") or 0) + 1
+                state["cooldown_until"] = now + float(5 * 60 * 60)
+                state["last_error"] = error_message or ""
+                state["last_status"] = status_code
+                state["status"] = "cooldown_insufficient_balance"
+                state["last_classification"] = classification
+                state["last_raw_code"] = (error_info or {}).get("raw_code") or ""
+                state["last_raw_message"] = (error_info or {}).get("raw_message") or error_message or ""
+                state["updated_at"] = now
+                state["last_failure_at"] = _utc_now()
+                self._request_state[label] = state
+                mark_chatgpt_auth_result(
+                    label,
+                    success=False,
+                    status_code=status_code,
+                    error_message=error_message,
+                    classification=classification,
+                    cooldown_seconds=5 * 60 * 60,
+                    raw_code=(error_info or {}).get("raw_code"),
+                    raw_message=(error_info or {}).get("raw_message"),
+                )
+                self._append_log(f"request result: {label} insufficient balance")
+                return
+            if classification == "account_invalid":
+                state["failures"] = int(state.get("failures") or 0) + 1
+                state["cooldown_until"] = 0.0
+                state["last_error"] = error_message or ""
+                state["last_status"] = status_code
+                state["status"] = "removed_invalid"
+                state["last_classification"] = classification
+                state["last_raw_code"] = (error_info or {}).get("raw_code") or ""
+                state["last_raw_message"] = (error_info or {}).get("raw_message") or error_message or ""
+                state["updated_at"] = now
+                state["last_failure_at"] = _utc_now()
+                self._request_state[label] = state
+            else:
+                failures = int(state.get("failures") or 0) + 1
+                cooldown = min(max_retry_interval, 2 ** max(1, failures - 1))
+                state["failures"] = failures
+                state["cooldown_until"] = now + float(cooldown)
+                state["last_error"] = error_message or ""
+                state["last_status"] = status_code
+                state["status"] = "temporary_failure"
+                state["last_classification"] = classification
+                state["last_raw_code"] = (error_info or {}).get("raw_code") or ""
+                state["last_raw_message"] = (error_info or {}).get("raw_message") or error_message or ""
+                state["updated_at"] = now
+                state["last_failure_at"] = _utc_now()
+                self._request_state[label] = state
+                mark_chatgpt_auth_result(
+                    label,
+                    success=False,
+                    status_code=status_code,
+                    error_message=error_message,
+                    classification=classification,
+                    raw_code=(error_info or {}).get("raw_code"),
+                    raw_message=(error_info or {}).get("raw_message"),
+                )
             self._append_log(f"request result: {label} failure ({error_message or 'unknown error'})")
+        if classification == "account_invalid":
+            self.remove_auth_for_label(label, reason=error_message or "Invalid account from codex app-server")
 
     def wrap_upstream(self, label: str, upstream: Any) -> ManagedCodexUpstream:
         return ManagedCodexUpstream(upstream, self, label)

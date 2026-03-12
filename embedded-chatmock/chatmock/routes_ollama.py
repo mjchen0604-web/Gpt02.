@@ -17,8 +17,22 @@ from .reasoning import (
     extract_service_tier_from_model_name,
 )
 from .transform import convert_ollama_messages, normalize_ollama_tools
+from .upstream_errors import (
+    build_error_info,
+    build_ollama_error_response,
+    error_info_from_event_response,
+    error_info_from_flask_response,
+    error_info_from_http_response,
+    normalized_error_payload,
+    should_retry_next_candidate,
+)
 from .upstream import normalize_model_name, start_upstream_request
-from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses
+from .utils import (
+    RetryableStreamError,
+    convert_chat_messages_to_responses_input,
+    convert_tools_chat_to_responses,
+    get_effective_chatgpt_auth_candidates,
+)
 
 
 ollama_bp = Blueprint("ollama", __name__)
@@ -77,6 +91,23 @@ def _instructions_for_model(model: str) -> str:
         if isinstance(codex, str) and codex.strip():
             return codex
     return base
+
+
+def _upstream_attempt_limit(is_stream: bool, configured_upstream: str) -> int:
+    if is_stream:
+        return 1
+    if configured_upstream == "chatgpt-backend":
+        try:
+            return max(1, len(get_effective_chatgpt_auth_candidates(ensure_fresh=True) or []))
+        except Exception:
+            return 1
+    manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
+    if manager is not None and hasattr(manager, "get_request_candidates"):
+        try:
+            return max(1, len(manager.get_request_candidates() or []))
+        except Exception:
+            return 1
+    return 1
 
 
 def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None = None) -> str | None:
@@ -329,83 +360,93 @@ def ollama_chat() -> Response:
     model_reasoning = extract_reasoning_from_model_name(model)
     normalized_model = normalize_model_name(model)
     service_tier = _resolve_service_tier(payload, model)
-    upstream, error_resp = start_upstream_request(
-        normalized_model,
-        input_items,
-        instructions=_instructions_for_model(normalized_model),
-        tools=tools_responses,
-        tool_choice=tool_choice,
-        parallel_tool_calls=parallel_tool_calls,
-        reasoning_param=build_reasoning_param(
-            reasoning_effort,
-            reasoning_summary,
-            model_reasoning,
-            allowed_efforts=allowed_efforts_for_model(model),
-        ),
-        service_tier=service_tier,
-    )
-    if error_resp is not None:
-        if verbose:
-            try:
-                body = error_resp.get_data(as_text=True)
-                if body:
-                    try:
-                        parsed = json.loads(body)
-                    except Exception:
-                        parsed = body
-                    _log_json("OUT POST /api/chat", parsed)
-            except Exception:
-                pass
-        return error_resp
+    configured_upstream = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
+    attempt_limit = _upstream_attempt_limit(stream_req, configured_upstream)
+    last_error_info: Dict[str, Any] | None = None
+    upstream = None
+    for attempt_index in range(attempt_limit):
+        upstream, error_resp = start_upstream_request(
+            normalized_model,
+            input_items,
+            instructions=_instructions_for_model(normalized_model),
+            tools=tools_responses,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            reasoning_param=build_reasoning_param(
+                reasoning_effort,
+                reasoning_summary,
+                model_reasoning,
+                allowed_efforts=allowed_efforts_for_model(model),
+            ),
+            service_tier=service_tier,
+        )
+        if error_resp is not None:
+            error_info = error_info_from_flask_response("chatcore", "request_start", error_resp)
+            last_error_info = error_info
+            if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
+                continue
+            return build_ollama_error_response(error_info)
 
-    record_rate_limits_from_response(upstream)
+        record_rate_limits_from_response(upstream)
 
-    if upstream.status_code >= 400:
-        try:
-            err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
-        except Exception:
-            err_body = {"raw": upstream.text}
-        if had_responses_tools:
-            if verbose:
-                print("[Passthrough] Upstream rejected tools; retrying without extras (args redacted)")
-            base_tools_only = convert_tools_chat_to_responses(normalize_ollama_tools(tools_req))
-            safe_choice = payload.get("tool_choice", "auto")
-            upstream2, err2 = start_upstream_request(
-                normalize_model_name(model),
-                input_items,
-                instructions=BASE_INSTRUCTIONS,
-                tools=base_tools_only,
-                tool_choice=safe_choice,
-                parallel_tool_calls=parallel_tool_calls,
-                reasoning_param=build_reasoning_param(
-                    reasoning_effort,
-                    reasoning_summary,
-                    model_reasoning,
-                    allowed_efforts=allowed_efforts_for_model(model),
-                ),
-                service_tier=service_tier,
-            )
-            record_rate_limits_from_response(upstream2)
-            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
-                upstream = upstream2
-            else:
-                err = {"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error"), "code": "RESPONSES_TOOLS_REJECTED"}}
+        if upstream.status_code >= 400:
+            error_info = error_info_from_http_response(getattr(upstream, "chatmock_source", "upstream"), "http", upstream)
+            last_error_info = error_info
+            if had_responses_tools:
                 if verbose:
-                    _log_json("OUT POST /api/chat", err)
-                return jsonify(err), (upstream2.status_code if upstream2 is not None else upstream.status_code)
-        else:
-            if verbose:
-                print("/api/chat upstream error status=", upstream.status_code, " body:", json.dumps(err_body)[:2000])
-            err = {"error": (err_body.get("error", {}) or {}).get("message", "Upstream error")}
-            if verbose:
-                _log_json("OUT POST /api/chat", err)
-            return jsonify(err), upstream.status_code
+                    print("[Passthrough] Upstream rejected tools; retrying without extras (args redacted)")
+                base_tools_only = convert_tools_chat_to_responses(normalize_ollama_tools(tools_req))
+                safe_choice = payload.get("tool_choice", "auto")
+                upstream2, err2 = start_upstream_request(
+                    normalize_model_name(model),
+                    input_items,
+                    instructions=BASE_INSTRUCTIONS,
+                    tools=base_tools_only,
+                    tool_choice=safe_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                    reasoning_param=build_reasoning_param(
+                        reasoning_effort,
+                        reasoning_summary,
+                        model_reasoning,
+                        allowed_efforts=allowed_efforts_for_model(model),
+                    ),
+                    service_tier=service_tier,
+                )
+                record_rate_limits_from_response(upstream2)
+                if err2 is None and upstream2 is not None and upstream2.status_code < 400:
+                    upstream = upstream2
+                    break
+                if err2 is not None:
+                    error_info = error_info_from_flask_response("chatcore", "tool_retry", err2)
+                elif upstream2 is not None:
+                    error_info = error_info_from_http_response(getattr(upstream2, "chatmock_source", "upstream"), "tool_retry", upstream2)
+                last_error_info = error_info
+            if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+                continue
+            return build_ollama_error_response(error_info)
+        break
+
+    if upstream is None:
+        return build_ollama_error_response(
+            last_error_info
+            or build_error_info(
+                source="chatcore",
+                phase="retry_exhausted",
+                raw_status=502,
+                raw_message="No candidate succeeded",
+                raw_body={"message": "No candidate succeeded"},
+            )
+        )
 
     created_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     model_out = model if isinstance(model, str) and model.strip() else normalized_model
 
     if stream_req:
-        def _gen():
+        def _gen(current_upstream):
             compat = (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower()
             think_open = False
             think_closed = False
@@ -414,8 +455,9 @@ def ollama_chat() -> Response:
             full_parts: List[str] = []
             tool_calls_stream: List[Dict[str, Any]] = []
             done_reason = "stop"
+            has_visible_output = False
             try:
-                for raw_line in upstream.iter_lines(decode_unicode=False):
+                for raw_line in current_upstream.iter_lines(decode_unicode=False):
                     if not raw_line:
                         continue
                     line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
@@ -453,6 +495,7 @@ def ollama_chat() -> Response:
                                     + "\n"
                                 )
                                 full_parts.append("\n")
+                                has_visible_output = True
                                 pending_summary_paragraph = False
                             if delta_txt:
                                 yield (
@@ -467,6 +510,7 @@ def ollama_chat() -> Response:
                                     + "\n"
                                 )
                                 full_parts.append(delta_txt)
+                                has_visible_output = True
                         elif compat == "think-tags":
                             if not think_open and not think_closed:
                                 yield (
@@ -481,6 +525,7 @@ def ollama_chat() -> Response:
                                     + "\n"
                                 )
                                 full_parts.append("<think>")
+                                has_visible_output = True
                                 think_open = True
                             if think_open and not think_closed:
                                 if kind == "response.reasoning_summary_text.delta" and pending_summary_paragraph:
@@ -496,6 +541,7 @@ def ollama_chat() -> Response:
                                         + "\n"
                                     )
                                     full_parts.append("\n")
+                                    has_visible_output = True
                                     pending_summary_paragraph = False
                                 if delta_txt:
                                     yield (
@@ -510,6 +556,7 @@ def ollama_chat() -> Response:
                                         + "\n"
                                     )
                                     full_parts.append(delta_txt)
+                                    has_visible_output = True
                         else:
                             pass
                     elif kind == "response.output_text.delta":
@@ -527,6 +574,7 @@ def ollama_chat() -> Response:
                                 + "\n"
                             )
                             full_parts.append("</think>")
+                            has_visible_output = True
                             think_open = False
                             think_closed = True
                         if delta:
@@ -542,6 +590,7 @@ def ollama_chat() -> Response:
                                 + "\n"
                             )
                             full_parts.append(delta)
+                            has_visible_output = True
                     elif kind == "response.output_item.done":
                         item = evt.get("item") or {}
                         if isinstance(item, dict) and item.get("type") == "function_call":
@@ -562,10 +611,21 @@ def ollama_chat() -> Response:
                                     }
                                 )
                                 done_reason = "tool_calls"
+                                has_visible_output = True
+                    elif kind == "response.failed":
+                        error_info = error_info_from_event_response(
+                            getattr(current_upstream, "chatmock_source", "upstream"),
+                            "stream",
+                            evt.get("response"),
+                        )
+                        if not has_visible_output and should_retry_next_candidate(error_info):
+                            raise RetryableStreamError(error_info)
+                        yield json.dumps({"error": normalized_error_payload(error_info)}) + "\n"
+                        return
                     elif kind == "response.completed":
                         break
             finally:
-                upstream.close()
+                current_upstream.close()
                 if compat == "think-tags" and think_open and not think_closed:
                     yield (
                         json.dumps(
@@ -594,7 +654,41 @@ def ollama_chat() -> Response:
                 yield json.dumps(done_obj) + "\n"
         if verbose:
             print("OUT POST /api/chat (streaming response)")
-        stream_iter = stream_with_context(_gen())
+
+        def _retrying_stream():
+            current_upstream = upstream
+            remaining_attempts = max(1, attempt_limit)
+            while remaining_attempts > 0:
+                try:
+                    yield from _gen(current_upstream)
+                    return
+                except RetryableStreamError as exc:
+                    remaining_attempts -= 1
+                    if remaining_attempts <= 0:
+                        yield json.dumps({"error": normalized_error_payload(exc.error_info)}) + "\n"
+                        return
+                    next_upstream, next_error = start_upstream_request(
+                        normalized_model,
+                        input_items,
+                        instructions=_instructions_for_model(normalized_model),
+                        tools=tools_responses,
+                        tool_choice=tool_choice,
+                        parallel_tool_calls=parallel_tool_calls,
+                        reasoning_param=build_reasoning_param(
+                            reasoning_effort,
+                            reasoning_summary,
+                            model_reasoning,
+                            allowed_efforts=allowed_efforts_for_model(model),
+                        ),
+                        service_tier=service_tier,
+                    )
+                    if next_error is not None:
+                        next_error_info = error_info_from_flask_response("chatcore", "request_start", next_error)
+                        yield json.dumps({"error": normalized_error_payload(next_error_info)}) + "\n"
+                        return
+                    current_upstream = next_upstream
+
+        stream_iter = stream_with_context(_retrying_stream())
         stream_iter = _wrap_stream_logging("STREAM OUT /api/chat", stream_iter, verbose)
         resp = current_app.response_class(
             stream_iter,
@@ -613,6 +707,8 @@ def ollama_chat() -> Response:
     tool_calls: List[Dict[str, Any]] = []
     observed_service_tier: str | None = None
     completed_ok = False
+    error_message: str | None = None
+    error_info: Dict[str, Any] | None = None
     try:
         for raw in upstream.iter_lines(decode_unicode=False):
             if not raw:
@@ -657,6 +753,13 @@ def ollama_chat() -> Response:
                                 "function": {"name": name, "arguments": args},
                             }
                         )
+            elif kind == "response.failed":
+                error_info = error_info_from_event_response(
+                    getattr(upstream, "chatmock_source", "upstream"),
+                    "stream",
+                    evt.get("response"),
+                )
+                error_message = error_info.get("raw_message") or "response.failed"
             elif kind == "response.completed":
                 completed_ok = True
                 break
@@ -667,6 +770,17 @@ def ollama_chat() -> Response:
             except Exception:
                 pass
         upstream.close()
+
+    if error_message:
+        if error_info is None:
+            error_info = build_error_info(
+                source=getattr(upstream, "chatmock_source", "upstream"),
+                phase="stream",
+                raw_status=int(getattr(upstream, "status_code", 502) or 502),
+                raw_message=error_message,
+                raw_body={"message": error_message},
+            )
+        return build_ollama_error_response(error_info)
 
     if (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower() == "think-tags":
         rtxt_parts = []

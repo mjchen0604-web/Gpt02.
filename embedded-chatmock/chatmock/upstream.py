@@ -8,16 +8,18 @@ import requests
 from flask import Response, current_app, jsonify, make_response
 
 from .config import CHATGPT_RESPONSES_URL
-from .codex_app_server import connect_codex_app_server
+from .codex_app_server import CodexAppServerError, connect_codex_app_server
 from .http import build_cors_headers
 from .reasoning import split_model_alias
 from .session import ensure_session_id
 from flask import request as flask_request
+from .upstream_errors import build_error_info, build_openai_error_response, error_info_from_http_response, should_retry_next_candidate
 from .utils import (
     get_effective_chatgpt_auth_candidates,
     get_max_retry_interval_seconds,
     get_request_retry_limit,
     get_retryable_statuses,
+    handle_chatgpt_candidate_failure,
     mark_chatgpt_auth_result,
 )
 
@@ -101,13 +103,15 @@ def start_upstream_request(
     if upstream_mode == "codex-app-server":
         app_server_url = str(current_app.config.get("CODEX_APP_SERVER_URL") or "").strip()
         if not app_server_url:
-            resp = make_response(
-                jsonify({"error": {"message": "Missing CODEX_APP_SERVER_URL for codex-app-server upstream"}}),
-                500,
+            return None, build_openai_error_response(
+                build_error_info(
+                    source="chatmock",
+                    phase="config",
+                    raw_status=500,
+                    raw_message="Missing CODEX_APP_SERVER_URL for codex-app-server upstream",
+                    raw_body={"message": "Missing CODEX_APP_SERVER_URL for codex-app-server upstream"},
+                )
             )
-            for k, v in build_cors_headers().items():
-                resp.headers.setdefault(k, v)
-            return None, resp
         manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
         candidates: List[Dict[str, str]] = []
         if manager is not None and hasattr(manager, "get_request_candidates"):
@@ -121,6 +125,7 @@ def start_upstream_request(
             candidates = [{"label": "default", "url": app_server_url}]
 
         last_error = None
+        last_error_info = None
         for candidate in candidates:
             candidate_url = str(candidate.get("url") or "").strip() or app_server_url
             candidate_label = str(candidate.get("label") or "default").strip() or "default"
@@ -142,9 +147,27 @@ def start_upstream_request(
                 )
             except Exception as exc:
                 last_error = exc
+                status_code = exc.status_code if isinstance(exc, CodexAppServerError) else None
+                last_error_info = (
+                    exc.error_info
+                    if isinstance(exc, CodexAppServerError) and isinstance(exc.error_info, dict)
+                    else build_error_info(
+                        source="codex-app-server",
+                        phase="connect",
+                        raw_status=status_code,
+                        raw_message=str(exc),
+                        raw_body={"exception": str(exc)},
+                    )
+                )
                 if manager is not None and hasattr(manager, "mark_request_result"):
                     try:
-                        manager.mark_request_result(candidate_label, success=False, error_message=str(exc))
+                        manager.mark_request_result(
+                            candidate_label,
+                            success=False,
+                            error_message=str(exc),
+                            status_code=status_code,
+                            error_info=last_error_info,
+                        )
                     except Exception:
                         pass
                 if verbose:
@@ -155,21 +178,21 @@ def start_upstream_request(
                     upstream = manager.wrap_upstream(candidate_label, upstream)
                 except Exception:
                     pass
+            try:
+                upstream.chatmock_source = "codex-app-server"
+            except Exception:
+                pass
             return upstream, None
 
-        resp = make_response(
-            jsonify(
-                {
-                    "error": {
-                        "message": f"codex app-server upstream failed for all candidates: {last_error or 'no candidates available'}"
-                    }
-                }
-            ),
-            502,
-        )
-        for k, v in build_cors_headers().items():
-            resp.headers.setdefault(k, v)
-        return None, resp
+        if last_error_info is None:
+            last_error_info = build_error_info(
+                source="codex-app-server",
+                phase="connect",
+                raw_status=502,
+                raw_message=f"codex app-server upstream failed for all candidates: {last_error or 'no candidates available'}",
+                raw_body={"message": f"codex app-server upstream failed for all candidates: {last_error or 'no candidates available'}"},
+            )
+        return None, build_openai_error_response(last_error_info)
 
     auth_candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
     if not auth_candidates:
@@ -233,6 +256,7 @@ def start_upstream_request(
     max_retry_interval = get_max_retry_interval_seconds()
     last_exception = None
     last_upstream = None
+    last_error_info = None
 
     for round_idx in range(request_retry_limit + 1):
         if round_idx > 0:
@@ -271,16 +295,38 @@ def start_upstream_request(
                 )
             except requests.RequestException as exc:
                 last_exception = exc
-                mark_chatgpt_auth_result(label, success=False, error_message=str(exc))
+                error_info = build_error_info(
+                    source="chatgpt-backend",
+                    phase="http",
+                    raw_message=str(exc),
+                    raw_body={"exception": str(exc)},
+                )
+                last_error_info = error_info
+                handle_chatgpt_candidate_failure(candidate, error_info)
                 if verbose:
                     print(f"Upstream request failed for {label}: {exc}")
                 continue
 
             last_upstream = upstream
             status = int(upstream.status_code or 0)
+            error_info = error_info_from_http_response("chatgpt-backend", "http", upstream)
+            last_error_info = error_info
+            classification_retry = should_retry_next_candidate(error_info)
             should_retry = status in retryable_statuses
             has_more_candidates = idx < len(round_candidates) - 1
             has_more_rounds = round_idx < request_retry_limit
+
+            if classification_retry:
+                handle_chatgpt_candidate_failure(candidate, error_info)
+                if has_more_candidates or has_more_rounds:
+                    if verbose:
+                        print(f"Upstream classified retry for {label}; retrying with next account.")
+                    try:
+                        upstream.close()
+                    except Exception:
+                        pass
+                    continue
+                return None, build_openai_error_response(error_info)
 
             if should_retry:
                 mark_chatgpt_auth_result(label, success=False, status_code=status)
@@ -301,15 +347,13 @@ def start_upstream_request(
         return last_upstream, None
 
     if last_exception is not None:
-        resp = make_response(
-            jsonify({"error": {"message": f"Upstream ChatGPT request failed: {last_exception}"}}),
-            502,
-        )
+        if last_error_info is not None:
+            return None, build_openai_error_response(last_error_info)
+        resp = make_response(jsonify({"error": {"message": f"Upstream ChatGPT request failed: {last_exception}"}}), 502)
     else:
-        resp = make_response(
-            jsonify({"error": {"message": "No valid ChatGPT account is available."}}),
-            401,
-        )
+        if last_error_info is not None:
+            return None, build_openai_error_response(last_error_info)
+        resp = make_response(jsonify({"error": {"message": "No valid ChatGPT account is available."}}), 401)
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return None, resp
