@@ -10,8 +10,6 @@ from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, current_app, jsonify, make_response, request, send_from_directory
 
-from .codex_manager import CodexAppServerPoolManager
-from .config import CODEX_APP_SERVER_URL_DEFAULT, UPSTREAM_MODE_DEFAULT
 from .utils import (
     get_chatgpt_auth_records,
     get_max_retry_interval_seconds,
@@ -27,8 +25,6 @@ _VALID_ROUTING_STRATEGIES = {"round-robin", "random", "first"}
 _VALID_REASONING_EFFORT = {"minimal", "low", "medium", "high", "xhigh"}
 _VALID_REASONING_SUMMARY = {"auto", "concise", "detailed", "none"}
 _VALID_REASONING_COMPAT = {"legacy", "o3", "think-tags", "current"}
-_VALID_UPSTREAM_MODES = {"codex-app-server"}
-_VALID_SERVICE_TIERS = {"", "fast", "flex", "priority"}
 
 
 def _model_ids(expose_variants: bool) -> List[str]:
@@ -106,15 +102,6 @@ def _clean_int(value: Any, default: int, minimum: int, maximum: int) -> int:
 def _clean_choice(value: Any, allowed: set[str], default: str) -> str:
     candidate = _clean_string(value, default=default).lower()
     if candidate not in allowed:
-        return default
-    return candidate
-
-
-def _clean_service_tier(value: Any, default: str = "") -> str:
-    candidate = _clean_string(value, default=default).lower()
-    if candidate in ("off", "none", "unset", "default"):
-        return ""
-    if candidate not in _VALID_SERVICE_TIERS:
         return default
     return candidate
 
@@ -199,35 +186,6 @@ def _runtime_codex_manager():
     return current_app.config.get("CODEX_APP_SERVER_MANAGER")
 
 
-def _codex_manager_flags_snapshot(manager: Any | None) -> tuple[bool, bool]:
-    if manager is not None and hasattr(manager, "status"):
-        try:
-            status = manager.status()
-            return bool(status.get("managed")), bool(status.get("autostart"))
-        except Exception:
-            pass
-    return (
-        _bool_env("CHATMOCK_MANAGE_CODEX_APP_SERVER", default=False),
-        _bool_env("CHATMOCK_AUTO_START_CODEX_APP_SERVER", default=True),
-    )
-
-
-def _refresh_codex_manager(runtime_app: Any, auth_files: List[str]) -> None:
-    previous = runtime_app.config.get("CODEX_APP_SERVER_MANAGER")
-    if previous is not None and hasattr(previous, "stop"):
-        try:
-            previous.stop()
-        except Exception:
-            pass
-
-    manager = CodexAppServerPoolManager(str(runtime_app.config.get("CODEX_APP_SERVER_URL") or CODEX_APP_SERVER_URL_DEFAULT))
-    runtime_app.config["CODEX_APP_SERVER_MANAGER"] = manager
-    try:
-        manager.sync_from_auth_files(auth_files, restart=False)
-    except Exception:
-        pass
-
-
 def _settings_path() -> Path:
     explicit = (os.getenv("CHATMOCK_DASHBOARD_SETTINGS_PATH") or "").strip()
     if explicit:
@@ -271,8 +229,6 @@ def _current_settings_snapshot(app=None) -> Dict[str, Any]:
     runtime_app = app or _get_runtime_app()
     stored = _read_settings_file()
     auth_files = _merge_auth_files(_current_auth_files(), _discover_auth_files(_auth_storage_root()), replace=False)
-    manager = runtime_app.config.get("CODEX_APP_SERVER_MANAGER") if runtime_app is not None else None
-    manage_codex_app_server, auto_start_codex_app_server = _codex_manager_flags_snapshot(manager)
 
     if runtime_app is not None:
         reasoning_effort = str(runtime_app.config.get("REASONING_EFFORT", "medium"))
@@ -282,9 +238,6 @@ def _current_settings_snapshot(app=None) -> Dict[str, Any]:
         enable_web_search = bool(runtime_app.config.get("DEFAULT_WEB_SEARCH"))
         verbose = bool(runtime_app.config.get("VERBOSE"))
         verbose_obfuscation = bool(runtime_app.config.get("VERBOSE_OBFUSCATION"))
-        upstream_mode = str(runtime_app.config.get("UPSTREAM_MODE", UPSTREAM_MODE_DEFAULT))
-        codex_app_server_url = str(runtime_app.config.get("CODEX_APP_SERVER_URL", CODEX_APP_SERVER_URL_DEFAULT))
-        service_tier = runtime_app.config.get("SERVICE_TIER")
     else:
         reasoning_effort = os.getenv("CHATGPT_LOCAL_REASONING_EFFORT", "medium")
         reasoning_summary = os.getenv("CHATGPT_LOCAL_REASONING_SUMMARY", "auto")
@@ -293,9 +246,6 @@ def _current_settings_snapshot(app=None) -> Dict[str, Any]:
         enable_web_search = _bool_env("CHATGPT_LOCAL_ENABLE_WEB_SEARCH", default=False)
         verbose = _bool_env("CHATGPT_LOCAL_VERBOSE", default=False)
         verbose_obfuscation = _bool_env("CHATGPT_LOCAL_VERBOSE_OBFUSCATION", default=False)
-        upstream_mode = os.getenv("CHATGPT_LOCAL_UPSTREAM", UPSTREAM_MODE_DEFAULT)
-        codex_app_server_url = os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL", CODEX_APP_SERVER_URL_DEFAULT)
-        service_tier = os.getenv("CHATGPT_LOCAL_SERVICE_TIER", "")
 
     return {
         "routingStrategy": _clean_choice(
@@ -312,11 +262,6 @@ def _current_settings_snapshot(app=None) -> Dict[str, Any]:
         "enableWebSearch": bool(enable_web_search),
         "verbose": bool(verbose),
         "verboseObfuscation": bool(verbose_obfuscation),
-        "upstreamMode": _clean_choice(upstream_mode, _VALID_UPSTREAM_MODES, UPSTREAM_MODE_DEFAULT),
-        "codexAppServerUrl": _clean_string(codex_app_server_url, default=CODEX_APP_SERVER_URL_DEFAULT),
-        "serviceTier": _clean_service_tier(service_tier, ""),
-        "manageCodexAppServer": bool(manage_codex_app_server),
-        "autoStartCodexAppServer": bool(auto_start_codex_app_server),
         "httpProxy": os.getenv("HTTP_PROXY", ""),
         "httpsProxy": os.getenv("HTTPS_PROXY", ""),
         "allProxy": os.getenv("ALL_PROXY", ""),
@@ -378,25 +323,6 @@ def _merge_payload_settings(payload: Dict[str, Any], current: Dict[str, Any]) ->
             incoming.get("verboseObfuscation", current["verboseObfuscation"]),
             default=current["verboseObfuscation"],
         ),
-        "upstreamMode": _clean_choice(
-            incoming.get("upstreamMode", current["upstreamMode"]),
-            _VALID_UPSTREAM_MODES,
-            current["upstreamMode"],
-        ),
-        "codexAppServerUrl": _clean_string(
-            incoming.get("codexAppServerUrl", current["codexAppServerUrl"]),
-            default=current["codexAppServerUrl"],
-        )
-        or CODEX_APP_SERVER_URL_DEFAULT,
-        "serviceTier": _clean_service_tier(incoming.get("serviceTier", current["serviceTier"]), current["serviceTier"]),
-        "manageCodexAppServer": _bool_value(
-            incoming.get("manageCodexAppServer", current["manageCodexAppServer"]),
-            default=current["manageCodexAppServer"],
-        ),
-        "autoStartCodexAppServer": _bool_value(
-            incoming.get("autoStartCodexAppServer", current["autoStartCodexAppServer"]),
-            default=current["autoStartCodexAppServer"],
-        ),
         "httpProxy": _clean_string(incoming.get("httpProxy", current["httpProxy"])),
         "httpsProxy": _clean_string(incoming.get("httpsProxy", current["httpsProxy"])),
         "allProxy": _clean_string(incoming.get("allProxy", current["allProxy"])),
@@ -427,12 +353,6 @@ def _apply_settings(settings: Dict[str, Any], *, app=None, persist: bool) -> Dic
     os.environ["CHATGPT_LOCAL_ENABLE_WEB_SEARCH"] = "1" if merged["enableWebSearch"] else "0"
     os.environ["CHATGPT_LOCAL_VERBOSE"] = "1" if merged["verbose"] else "0"
     os.environ["CHATGPT_LOCAL_VERBOSE_OBFUSCATION"] = "1" if merged["verboseObfuscation"] else "0"
-    os.environ["CHATGPT_LOCAL_UPSTREAM"] = merged["upstreamMode"]
-    os.environ["CHATGPT_LOCAL_CODEX_APP_SERVER_URL"] = merged["codexAppServerUrl"]
-    os.environ["CHATMOCK_MANAGE_CODEX_APP_SERVER"] = "1" if merged["manageCodexAppServer"] else "0"
-    os.environ["CHATMOCK_AUTO_START_CODEX_APP_SERVER"] = "1" if merged["autoStartCodexAppServer"] else "0"
-
-    _set_env_or_clear("CHATGPT_LOCAL_SERVICE_TIER", merged["serviceTier"])
 
     _set_env_or_clear("HTTP_PROXY", merged["httpProxy"])
     _set_env_or_clear("HTTPS_PROXY", merged["httpsProxy"])
@@ -447,10 +367,6 @@ def _apply_settings(settings: Dict[str, Any], *, app=None, persist: bool) -> Dic
         runtime_app.config["DEFAULT_WEB_SEARCH"] = merged["enableWebSearch"]
         runtime_app.config["VERBOSE"] = merged["verbose"]
         runtime_app.config["VERBOSE_OBFUSCATION"] = merged["verboseObfuscation"]
-        runtime_app.config["UPSTREAM_MODE"] = merged["upstreamMode"]
-        runtime_app.config["CODEX_APP_SERVER_URL"] = merged["codexAppServerUrl"]
-        runtime_app.config["SERVICE_TIER"] = merged["serviceTier"] or None
-        _refresh_codex_manager(runtime_app, merged["authFiles"])
 
     if persist:
         stored = _read_settings_file()
@@ -649,10 +565,8 @@ def dashboard_config():
         "CHATMOCK_DASHBOARD_SETTINGS_PATH": str(_settings_path()),
         "CHATMOCK_DATA_DIR": os.getenv("CHATMOCK_DATA_DIR", ""),
         "CHATMOCK_MANAGE_CODEX_APP_SERVER": os.getenv("CHATMOCK_MANAGE_CODEX_APP_SERVER", ""),
-        "CHATMOCK_AUTO_START_CODEX_APP_SERVER": os.getenv("CHATMOCK_AUTO_START_CODEX_APP_SERVER", ""),
         "CHATGPT_LOCAL_UPSTREAM": os.getenv("CHATGPT_LOCAL_UPSTREAM", ""),
         "CHATGPT_LOCAL_CODEX_APP_SERVER_URL": os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL", ""),
-        "CHATGPT_LOCAL_SERVICE_TIER": os.getenv("CHATGPT_LOCAL_SERVICE_TIER", ""),
         "CODEX_HOME": os.getenv("CODEX_HOME", ""),
         "service": service,
     }

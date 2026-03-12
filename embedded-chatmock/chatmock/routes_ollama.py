@@ -7,9 +7,9 @@ from typing import Any, Dict, List
 
 from flask import Blueprint, Response, current_app, jsonify, make_response, request, stream_with_context
 
+from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
-from .model_profiles import select_instructions_for_model
 from .reasoning import (
     allowed_efforts_for_model,
     build_reasoning_param,
@@ -17,15 +17,7 @@ from .reasoning import (
     extract_service_tier_from_model_name,
 )
 from .transform import convert_ollama_messages, normalize_ollama_tools
-from .upstream_errors import (
-    build_error_info,
-    build_ollama_error_response,
-    error_info_from_event_response,
-    error_info_from_flask_response,
-    error_info_from_http_response,
-    should_retry_next_candidate,
-)
-from .upstream import get_available_upstream_candidate_count, normalize_model_name, start_upstream_request
+from .upstream import normalize_model_name, start_upstream_request
 from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses
 
 
@@ -79,13 +71,12 @@ def ollama_version() -> Response:
 
 
 def _instructions_for_model(model: str) -> str:
-    return select_instructions_for_model(current_app.config, model)
-
-
-def _upstream_attempt_limit(is_stream: bool) -> int:
-    if is_stream:
-        return 1
-    return max(1, get_available_upstream_candidate_count())
+    base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
+    if "codex" in (model or "").lower():
+        codex = current_app.config.get("GPT5_CODEX_INSTRUCTIONS") or GPT5_CODEX_INSTRUCTIONS
+        if isinstance(codex, str) and codex.strip():
+            return codex
+    return base
 
 
 def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None = None) -> str | None:
@@ -338,136 +329,160 @@ def ollama_chat() -> Response:
     model_reasoning = extract_reasoning_from_model_name(model)
     normalized_model = normalize_model_name(model)
     service_tier = _resolve_service_tier(payload, model)
+    upstream, error_resp = start_upstream_request(
+        normalized_model,
+        input_items,
+        instructions=_instructions_for_model(normalized_model),
+        tools=tools_responses,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+        reasoning_param=build_reasoning_param(
+            reasoning_effort,
+            reasoning_summary,
+            model_reasoning,
+            allowed_efforts=allowed_efforts_for_model(model),
+        ),
+        service_tier=service_tier,
+    )
+    if error_resp is not None:
+        if verbose:
+            try:
+                body = error_resp.get_data(as_text=True)
+                if body:
+                    try:
+                        parsed = json.loads(body)
+                    except Exception:
+                        parsed = body
+                    _log_json("OUT POST /api/chat", parsed)
+            except Exception:
+                pass
+        return error_resp
+
+    record_rate_limits_from_response(upstream)
+
+    if upstream.status_code >= 400:
+        try:
+            err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
+        except Exception:
+            err_body = {"raw": upstream.text}
+        if had_responses_tools:
+            if verbose:
+                print("[Passthrough] Upstream rejected tools; retrying without extras (args redacted)")
+            base_tools_only = convert_tools_chat_to_responses(normalize_ollama_tools(tools_req))
+            safe_choice = payload.get("tool_choice", "auto")
+            upstream2, err2 = start_upstream_request(
+                normalize_model_name(model),
+                input_items,
+                instructions=BASE_INSTRUCTIONS,
+                tools=base_tools_only,
+                tool_choice=safe_choice,
+                parallel_tool_calls=parallel_tool_calls,
+                reasoning_param=build_reasoning_param(
+                    reasoning_effort,
+                    reasoning_summary,
+                    model_reasoning,
+                    allowed_efforts=allowed_efforts_for_model(model),
+                ),
+                service_tier=service_tier,
+            )
+            record_rate_limits_from_response(upstream2)
+            if err2 is None and upstream2 is not None and upstream2.status_code < 400:
+                upstream = upstream2
+            else:
+                err = {"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error"), "code": "RESPONSES_TOOLS_REJECTED"}}
+                if verbose:
+                    _log_json("OUT POST /api/chat", err)
+                return jsonify(err), (upstream2.status_code if upstream2 is not None else upstream.status_code)
+        else:
+            if verbose:
+                print("/api/chat upstream error status=", upstream.status_code, " body:", json.dumps(err_body)[:2000])
+            err = {"error": (err_body.get("error", {}) or {}).get("message", "Upstream error")}
+            if verbose:
+                _log_json("OUT POST /api/chat", err)
+            return jsonify(err), upstream.status_code
+
     created_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     model_out = model if isinstance(model, str) and model.strip() else normalized_model
 
-    attempt_limit = _upstream_attempt_limit(stream_req)
-    last_error_info: Dict[str, Any] | None = None
-    for attempt_index in range(attempt_limit):
-        upstream, error_resp = start_upstream_request(
-            normalized_model,
-            input_items,
-            instructions=_instructions_for_model(normalized_model),
-            tools=tools_responses,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            reasoning_param=build_reasoning_param(
-                reasoning_effort,
-                reasoning_summary,
-                model_reasoning,
-                allowed_efforts=allowed_efforts_for_model(model),
-            ),
-            service_tier=service_tier,
-        )
-        if error_resp is not None:
-            error_info = error_info_from_flask_response("chatcore", "request_start", error_resp)
-            last_error_info = error_info
-            if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                continue
-            if verbose:
-                try:
-                    body = error_resp.get_data(as_text=True)
-                    if body:
-                        try:
-                            parsed = json.loads(body)
-                        except Exception:
-                            parsed = body
-                        _log_json("OUT POST /api/chat", parsed)
-                except Exception:
-                    pass
-            return build_ollama_error_response(error_info)
-
-        record_rate_limits_from_response(upstream)
-
-        if upstream.status_code >= 400:
-            error_info = error_info_from_http_response(
-                getattr(upstream, "chatmock_source", "upstream"),
-                "http",
-                upstream,
-            )
-            last_error_info = error_info
-            if had_responses_tools:
-                if verbose:
-                    print("[Passthrough] Upstream rejected tools; retrying without extras (args redacted)")
-                base_tools_only = convert_tools_chat_to_responses(normalize_ollama_tools(tools_req))
-                safe_choice = payload.get("tool_choice", "auto")
-                upstream2, err2 = start_upstream_request(
-                    normalize_model_name(model),
-                    input_items,
-                    instructions=_instructions_for_model(normalize_model_name(model)),
-                    tools=base_tools_only,
-                    tool_choice=safe_choice,
-                    parallel_tool_calls=parallel_tool_calls,
-                    reasoning_param=build_reasoning_param(
-                        reasoning_effort,
-                        reasoning_summary,
-                        model_reasoning,
-                        allowed_efforts=allowed_efforts_for_model(model),
-                    ),
-                    service_tier=service_tier,
-                )
-                record_rate_limits_from_response(upstream2)
-                if err2 is None and upstream2 is not None and upstream2.status_code < 400:
-                    upstream = upstream2
-                else:
-                    if err2 is not None:
-                        error_info = error_info_from_flask_response("chatcore", "tool_retry", err2)
-                    elif upstream2 is not None:
-                        error_info = error_info_from_http_response(
-                            getattr(upstream2, "chatmock_source", "upstream"),
-                            "tool_retry",
-                            upstream2,
-                        )
-                    last_error_info = error_info
-                    if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
+    if stream_req:
+        def _gen():
+            compat = (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower()
+            think_open = False
+            think_closed = False
+            saw_any_summary = False
+            pending_summary_paragraph = False
+            full_parts: List[str] = []
+            tool_calls_stream: List[Dict[str, Any]] = []
+            done_reason = "stop"
+            try:
+                for raw_line in upstream.iter_lines(decode_unicode=False):
+                    if not raw_line:
                         continue
-                    if verbose:
-                        _log_json("OUT POST /api/chat", {"error": error_info})
-                    return build_ollama_error_response(error_info)
-            else:
-                if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                    continue
-                if verbose:
-                    print("/api/chat upstream error status=", upstream.status_code)
-                    _log_json("OUT POST /api/chat", {"error": error_info})
-                return build_ollama_error_response(error_info)
-
-        if stream_req:
-            def _gen():
-                compat = (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower()
-                think_open = False
-                think_closed = False
-                saw_any_summary = False
-                pending_summary_paragraph = False
-                full_parts: List[str] = []
-                tool_calls_stream: List[Dict[str, Any]] = []
-                done_reason = "stop"
-                try:
-                    for raw_line in upstream.iter_lines(decode_unicode=False):
-                        if not raw_line:
-                            continue
-                        line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
-                        if not line.startswith("data: "):
-                            continue
-                        data = line[len("data: "):].strip()
-                        if not data:
-                            continue
-                        if data == "[DONE]":
-                            break
-                        try:
-                            evt = json.loads(data)
-                        except Exception:
-                            continue
-                        kind = evt.get("type")
-                        if kind == "response.reasoning_summary_part.added":
-                            if compat in ("think-tags", "o3"):
-                                if saw_any_summary:
-                                    pending_summary_paragraph = True
-                                else:
-                                    saw_any_summary = True
-                        elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-                            delta_txt = evt.get("delta") or ""
-                            if compat == "o3":
+                    line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[len("data: "):].strip()
+                    if not data:
+                        continue
+                    if data == "[DONE]":
+                        break
+                    try:
+                        evt = json.loads(data)
+                    except Exception:
+                        continue
+                    kind = evt.get("type")
+                    if kind == "response.reasoning_summary_part.added":
+                        if compat in ("think-tags", "o3"):
+                            if saw_any_summary:
+                                pending_summary_paragraph = True
+                            else:
+                                saw_any_summary = True
+                    elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+                        delta_txt = evt.get("delta") or ""
+                        if compat == "o3":
+                            if kind == "response.reasoning_summary_text.delta" and pending_summary_paragraph:
+                                yield (
+                                    json.dumps(
+                                        {
+                                            "model": model_out,
+                                            "created_at": created_at,
+                                            "message": {"role": "assistant", "content": "\n"},
+                                            "done": False,
+                                        }
+                                    )
+                                    + "\n"
+                                )
+                                full_parts.append("\n")
+                                pending_summary_paragraph = False
+                            if delta_txt:
+                                yield (
+                                    json.dumps(
+                                        {
+                                            "model": model_out,
+                                            "created_at": created_at,
+                                            "message": {"role": "assistant", "content": delta_txt},
+                                            "done": False,
+                                        }
+                                    )
+                                    + "\n"
+                                )
+                                full_parts.append(delta_txt)
+                        elif compat == "think-tags":
+                            if not think_open and not think_closed:
+                                yield (
+                                    json.dumps(
+                                        {
+                                            "model": model_out,
+                                            "created_at": created_at,
+                                            "message": {"role": "assistant", "content": "<think>"},
+                                            "done": False,
+                                        }
+                                    )
+                                    + "\n"
+                                )
+                                full_parts.append("<think>")
+                                think_open = True
+                            if think_open and not think_closed:
                                 if kind == "response.reasoning_summary_text.delta" and pending_summary_paragraph:
                                     yield (
                                         json.dumps(
@@ -495,271 +510,195 @@ def ollama_chat() -> Response:
                                         + "\n"
                                     )
                                     full_parts.append(delta_txt)
-                            elif compat == "think-tags":
-                                if not think_open and not think_closed:
-                                    yield (
-                                        json.dumps(
-                                            {
-                                                "model": model_out,
-                                                "created_at": created_at,
-                                                "message": {"role": "assistant", "content": "<think>"},
-                                                "done": False,
-                                            }
-                                        )
-                                        + "\n"
-                                    )
-                                    full_parts.append("<think>")
-                                    think_open = True
-                                if think_open and not think_closed:
-                                    if kind == "response.reasoning_summary_text.delta" and pending_summary_paragraph:
-                                        yield (
-                                            json.dumps(
-                                                {
-                                                    "model": model_out,
-                                                    "created_at": created_at,
-                                                    "message": {"role": "assistant", "content": "\n"},
-                                                    "done": False,
-                                                }
-                                            )
-                                            + "\n"
-                                        )
-                                        full_parts.append("\n")
-                                        pending_summary_paragraph = False
-                                    if delta_txt:
-                                        yield (
-                                            json.dumps(
-                                                {
-                                                    "model": model_out,
-                                                    "created_at": created_at,
-                                                    "message": {"role": "assistant", "content": delta_txt},
-                                                    "done": False,
-                                                }
-                                            )
-                                            + "\n"
-                                        )
-                                        full_parts.append(delta_txt)
-                        elif kind == "response.output_text.delta":
-                            delta = evt.get("delta") or ""
-                            if compat == "think-tags" and think_open and not think_closed:
-                                yield (
-                                    json.dumps(
-                                        {
-                                            "model": model_out,
-                                            "created_at": created_at,
-                                            "message": {"role": "assistant", "content": "</think>"},
-                                            "done": False,
-                                        }
-                                    )
-                                    + "\n"
+                        else:
+                            pass
+                    elif kind == "response.output_text.delta":
+                        delta = evt.get("delta") or ""
+                        if compat == "think-tags" and think_open and not think_closed:
+                            yield (
+                                json.dumps(
+                                    {
+                                        "model": model_out,
+                                        "created_at": created_at,
+                                        "message": {"role": "assistant", "content": "</think>"},
+                                        "done": False,
+                                    }
                                 )
-                                full_parts.append("</think>")
-                                think_open = False
-                                think_closed = True
-                            if delta:
-                                yield (
-                                    json.dumps(
-                                        {
-                                            "model": model_out,
-                                            "created_at": created_at,
-                                            "message": {"role": "assistant", "content": delta},
-                                            "done": False,
-                                        }
-                                    )
-                                    + "\n"
-                                )
-                                full_parts.append(delta)
-                        elif kind == "response.output_item.done":
-                            item = evt.get("item") or {}
-                            if isinstance(item, dict) and item.get("type") == "function_call":
-                                call_id = item.get("call_id") or item.get("id") or ""
-                                name = item.get("name") or ""
-                                args = item.get("arguments") or ""
-                                if not isinstance(args, str):
-                                    try:
-                                        args = json.dumps(args, ensure_ascii=False)
-                                    except Exception:
-                                        args = "{}"
-                                if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
-                                    tool_calls_stream.append(
-                                        {
-                                            "id": call_id,
-                                            "type": "function",
-                                            "function": {"name": name, "arguments": args},
-                                        }
-                                    )
-                                    done_reason = "tool_calls"
-                        elif kind == "response.completed":
-                            break
-                finally:
-                    upstream.close()
-                    if compat == "think-tags" and think_open and not think_closed:
-                        yield (
-                            json.dumps(
-                                {
-                                    "model": model_out,
-                                    "created_at": created_at,
-                                    "message": {"role": "assistant", "content": "</think>"},
-                                    "done": False,
-                                }
+                                + "\n"
                             )
-                            + "\n"
+                            full_parts.append("</think>")
+                            think_open = False
+                            think_closed = True
+                        if delta:
+                            yield (
+                                json.dumps(
+                                    {
+                                        "model": model_out,
+                                        "created_at": created_at,
+                                        "message": {"role": "assistant", "content": delta},
+                                        "done": False,
+                                    }
+                                )
+                                + "\n"
+                            )
+                            full_parts.append(delta)
+                    elif kind == "response.output_item.done":
+                        item = evt.get("item") or {}
+                        if isinstance(item, dict) and item.get("type") == "function_call":
+                            call_id = item.get("call_id") or item.get("id") or ""
+                            name = item.get("name") or ""
+                            args = item.get("arguments") or ""
+                            if not isinstance(args, str):
+                                try:
+                                    args = json.dumps(args, ensure_ascii=False)
+                                except Exception:
+                                    args = "{}"
+                            if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                                tool_calls_stream.append(
+                                    {
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": args},
+                                    }
+                                )
+                                done_reason = "tool_calls"
+                    elif kind == "response.completed":
+                        break
+            finally:
+                upstream.close()
+                if compat == "think-tags" and think_open and not think_closed:
+                    yield (
+                        json.dumps(
+                            {
+                                "model": model_out,
+                                "created_at": created_at,
+                                "message": {"role": "assistant", "content": "</think>"},
+                                "done": False,
+                            }
                         )
-                        full_parts.append("</think>")
-                    done_obj = {
-                        "model": model_out,
-                        "created_at": created_at,
-                        "message": {
-                            "role": "assistant",
-                            "content": "" if not tool_calls_stream else "",
-                            **({"tool_calls": tool_calls_stream} if tool_calls_stream else {}),
-                        },
-                        "done": True,
-                        "done_reason": done_reason,
-                    }
-                    done_obj.update(_OLLAMA_FAKE_EVAL)
-                    yield json.dumps(done_obj) + "\n"
-            if verbose:
-                print("OUT POST /api/chat (streaming response)")
-            stream_iter = stream_with_context(_gen())
-            stream_iter = _wrap_stream_logging("STREAM OUT /api/chat", stream_iter, verbose)
-            resp = current_app.response_class(
-                stream_iter,
-                status=200,
-                mimetype="application/x-ndjson",
-            )
-            if service_tier:
-                resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-            for k, v in build_cors_headers().items():
-                resp.headers.setdefault(k, v)
-            return resp
-
-        full_text = ""
-        reasoning_summary_text = ""
-        reasoning_full_text = ""
-        tool_calls: List[Dict[str, Any]] = []
-        observed_service_tier: str | None = None
-        completed_ok = False
-        error_message: str | None = None
-        error_info: Dict[str, Any] | None = None
-        try:
-            for raw in upstream.iter_lines(decode_unicode=False):
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: "):].strip()
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    break
-                try:
-                    evt = json.loads(data)
-                except Exception:
-                    continue
-                if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
-                    observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
-                kind = evt.get("type")
-                if kind == "response.output_text.delta":
-                    full_text += evt.get("delta") or ""
-                elif kind == "response.reasoning_summary_text.delta":
-                    reasoning_summary_text += evt.get("delta") or ""
-                elif kind == "response.reasoning_text.delta":
-                    reasoning_full_text += evt.get("delta") or ""
-                elif kind == "response.output_item.done":
-                    item = evt.get("item") or {}
-                    if isinstance(item, dict) and item.get("type") == "function_call":
-                        call_id = item.get("call_id") or item.get("id") or ""
-                        name = item.get("name") or ""
-                        args = item.get("arguments") or ""
-                        if not isinstance(args, str):
-                            try:
-                                args = json.dumps(args, ensure_ascii=False)
-                            except Exception:
-                                args = "{}"
-                        if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
-                            tool_calls.append(
-                                {
-                                    "id": call_id,
-                                    "type": "function",
-                                    "function": {"name": name, "arguments": args},
-                                }
-                            )
-                elif kind == "response.failed":
-                    error_info = error_info_from_event_response(
-                        getattr(upstream, "chatmock_source", "upstream"),
-                        "stream",
-                        evt.get("response"),
+                        + "\n"
                     )
-                    error_message = error_info.get("raw_message") or "response.failed"
-                    break
-                elif kind == "response.completed":
-                    completed_ok = True
-                    break
-        finally:
-            if completed_ok and hasattr(upstream, "mark_success"):
-                try:
-                    upstream.mark_success()
-                except Exception:
-                    pass
-            upstream.close()
-
-        if error_message:
-            if error_info is None:
-                error_info = build_error_info(
-                    source=getattr(upstream, "chatmock_source", "upstream"),
-                    phase="stream",
-                    raw_status=int(getattr(upstream, "status_code", 502) or 502),
-                    raw_message=error_message,
-                    raw_body={"message": error_message},
-                )
-            last_error_info = error_info
-            if should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
-                continue
-            return build_ollama_error_response(error_info)
-
-        if (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower() == "think-tags":
-            rtxt_parts = []
-            if isinstance(reasoning_summary_text, str) and reasoning_summary_text.strip():
-                rtxt_parts.append(reasoning_summary_text)
-            if isinstance(reasoning_full_text, str) and reasoning_full_text.strip():
-                rtxt_parts.append(reasoning_full_text)
-            rtxt = "\n\n".join([p for p in rtxt_parts if p])
-            if rtxt:
-                full_text = f"<think>{rtxt}</think>" + (full_text or "")
-
-        out_json = {
-            "model": normalize_model_name(model),
-            "created_at": created_at,
-            "message": {
-                "role": "assistant",
-                "content": "" if tool_calls else full_text,
-                **({"tool_calls": tool_calls} if tool_calls else {}),
-            },
-            "done": True,
-            "done_reason": "tool_calls" if tool_calls else "stop",
-        }
-        if observed_service_tier:
-            out_json["service_tier"] = observed_service_tier
-        out_json.update(_OLLAMA_FAKE_EVAL)
+                    full_parts.append("</think>")
+                done_obj = {
+                    "model": model_out,
+                    "created_at": created_at,
+                    "message": {
+                        "role": "assistant",
+                        "content": "" if not tool_calls_stream else "",
+                        **({"tool_calls": tool_calls_stream} if tool_calls_stream else {}),
+                    },
+                    "done": True,
+                    "done_reason": done_reason,
+                }
+                done_obj.update(_OLLAMA_FAKE_EVAL)
+                yield json.dumps(done_obj) + "\n"
         if verbose:
-            _log_json("OUT POST /api/chat", out_json)
-        resp = make_response(jsonify(out_json), 200)
+            print("OUT POST /api/chat (streaming response)")
+        stream_iter = stream_with_context(_gen())
+        stream_iter = _wrap_stream_logging("STREAM OUT /api/chat", stream_iter, verbose)
+        resp = current_app.response_class(
+            stream_iter,
+            status=200,
+            mimetype="application/x-ndjson",
+        )
         if service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-        if observed_service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
 
-    return build_ollama_error_response(
-        last_error_info
-        or build_error_info(
-            source="codex-app-server",
-            phase="retry_exhausted",
-            raw_status=502,
-            raw_message="No candidate succeeded",
-            raw_body={"message": "No candidate succeeded"},
-        )
-    )
+    full_text = ""
+    reasoning_summary_text = ""
+    reasoning_full_text = ""
+    tool_calls: List[Dict[str, Any]] = []
+    observed_service_tier: str | None = None
+    completed_ok = False
+    try:
+        for raw in upstream.iter_lines(decode_unicode=False):
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):].strip()
+            if not data:
+                continue
+            if data == "[DONE]":
+                break
+            try:
+                evt = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
+            kind = evt.get("type")
+            if kind == "response.output_text.delta":
+                full_text += evt.get("delta") or ""
+            elif kind == "response.reasoning_summary_text.delta":
+                reasoning_summary_text += evt.get("delta") or ""
+            elif kind == "response.reasoning_text.delta":
+                reasoning_full_text += evt.get("delta") or ""
+            elif kind == "response.output_item.done":
+                item = evt.get("item") or {}
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    call_id = item.get("call_id") or item.get("id") or ""
+                    name = item.get("name") or ""
+                    args = item.get("arguments") or ""
+                    if not isinstance(args, str):
+                        try:
+                            args = json.dumps(args, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
+                    if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                        tool_calls.append(
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": args},
+                            }
+                        )
+            elif kind == "response.completed":
+                completed_ok = True
+                break
+    finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
+        upstream.close()
+
+    if (current_app.config.get("REASONING_COMPAT", "think-tags") or "think-tags").strip().lower() == "think-tags":
+        rtxt_parts = []
+        if isinstance(reasoning_summary_text, str) and reasoning_summary_text.strip():
+            rtxt_parts.append(reasoning_summary_text)
+        if isinstance(reasoning_full_text, str) and reasoning_full_text.strip():
+            rtxt_parts.append(reasoning_full_text)
+        rtxt = "\n\n".join([p for p in rtxt_parts if p])
+        if rtxt:
+            full_text = f"<think>{rtxt}</think>" + (full_text or "")
+
+    out_json = {
+        "model": normalize_model_name(model),
+        "created_at": created_at,
+        "message": {
+            "role": "assistant",
+            "content": "" if tool_calls else full_text,
+            **({"tool_calls": tool_calls} if tool_calls else {}),
+        },
+        "done": True,
+        "done_reason": "tool_calls" if tool_calls else "stop",
+    }
+    if observed_service_tier:
+        out_json["service_tier"] = observed_service_tier
+    out_json.update(_OLLAMA_FAKE_EVAL)
+    if verbose:
+        _log_json("OUT POST /api/chat", out_json)
+    resp = make_response(jsonify(out_json), 200)
+    if service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+    if observed_service_tier:
+        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+    for k, v in build_cors_headers().items():
+        resp.headers.setdefault(k, v)
+    return resp

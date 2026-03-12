@@ -14,24 +14,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from .config import CLIENT_ID_DEFAULT, OAUTH_TOKEN_URL
-from .upstream_errors import classify_error
-from .upstream_errors import error_info_from_event_response, normalized_error_payload, should_retry_next_candidate
 
 
 _AUTH_POOL_RR_LOCK = threading.Lock()
 _AUTH_POOL_RR_INDEX = 0
-_AUTH_POOL_STATE_LOCK = threading.RLock()
+_AUTH_POOL_STATE_LOCK = threading.Lock()
 _AUTH_POOL_STATE: Dict[str, Dict[str, Any]] = {}
 
 
 def eprint(*args, **kwargs) -> None:
     print(*args, file=sys.stderr, **kwargs)
-
-
-class RetryableStreamError(RuntimeError):
-    def __init__(self, error_info: Dict[str, Any]) -> None:
-        self.error_info = error_info
-        super().__init__(str((error_info or {}).get("raw_message") or "retryable stream failure"))
 
 
 def get_home_dir() -> str:
@@ -89,17 +81,6 @@ def _write_json_file(path: str, payload: Any) -> bool:
         return True
     except Exception as exc:
         eprint(f"ERROR: unable to write JSON file {path}: {exc}")
-        return False
-
-
-def _delete_file(path: str) -> bool:
-    try:
-        os.remove(path)
-        return True
-    except FileNotFoundError:
-        return True
-    except Exception as exc:
-        eprint(f"ERROR: unable to delete file {path}: {exc}")
         return False
 
 
@@ -377,10 +358,7 @@ def _candidate_from_auth_obj(
     *,
     label: str,
     ensure_fresh: bool,
-    source_kind: str = "",
-    source_path: str = "",
-    source_index: int | None = None,
-) -> tuple[Dict[str, Any] | None, bool]:
+) -> tuple[Dict[str, str] | None, bool]:
     access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
     changed = False
     refreshed = False
@@ -423,9 +401,6 @@ def _candidate_from_auth_obj(
             "label": label,
             "access_token": access_token,
             "account_id": account_id,
-            "source_kind": source_kind,
-            "source_path": source_path,
-            "source_index": source_index,
         },
         changed,
     )
@@ -532,96 +507,6 @@ def _now_iso8601() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _dashboard_settings_path() -> str | None:
-    explicit = (os.getenv("CHATMOCK_DASHBOARD_SETTINGS_PATH") or "").strip()
-    if explicit:
-        return explicit
-    data_dir = (os.getenv("CHATMOCK_DATA_DIR") or "").strip()
-    if data_dir:
-        return os.path.join(data_dir, "accounts", "_dashboard_settings.json")
-    return None
-
-
-def _load_dashboard_settings() -> Dict[str, Any] | None:
-    path = _dashboard_settings_path()
-    if not path:
-        return None
-    data = _read_raw_json_file(path)
-    return data if isinstance(data, dict) else None
-
-
-def _persist_dashboard_auth_files(paths: List[str]) -> bool:
-    path = _dashboard_settings_path()
-    if not path:
-        return False
-    payload = _load_dashboard_settings() or {}
-    payload["authFiles"] = list(paths)
-    payload["updatedAt"] = _now_iso8601()
-    return _write_json_file(path, payload)
-
-
-def _remove_path_from_auth_files_env(path: str) -> List[str]:
-    current = _parse_auth_files_env()
-    updated = [item for item in current if item != path]
-    if updated:
-        os.environ["CHATGPT_LOCAL_AUTH_FILES"] = ",".join(updated)
-    else:
-        os.environ.pop("CHATGPT_LOCAL_AUTH_FILES", None)
-    return updated
-
-
-def _remove_label_state(label: str) -> None:
-    with _AUTH_POOL_STATE_LOCK:
-        _AUTH_POOL_STATE.pop(label, None)
-
-
-def _remove_auth_from_pool_file(pool_path: str, index: int) -> bool:
-    raw_pool = _read_raw_json_file(pool_path)
-    if not isinstance(raw_pool, (dict, list)):
-        return False
-    removed = False
-    if isinstance(raw_pool, list):
-        if 0 <= index < len(raw_pool):
-            raw_pool.pop(index)
-            removed = True
-    else:
-        accounts = raw_pool.get("accounts")
-        if isinstance(accounts, list) and 0 <= index < len(accounts):
-            accounts.pop(index)
-            raw_pool["accounts"] = accounts
-            removed = True
-    if not removed:
-        return False
-    return _write_json_file(pool_path, raw_pool)
-
-
-def remove_chatgpt_auth_candidate(candidate: Dict[str, Any], *, reason: str = "") -> bool:
-    if not isinstance(candidate, dict):
-        return False
-    label = str(candidate.get("label") or "").strip()
-    source_kind = str(candidate.get("source_kind") or "").strip()
-    source_path = str(candidate.get("source_path") or "").strip()
-    source_index = candidate.get("source_index")
-
-    success = False
-    if source_kind in ("auth_file", "default_auth"):
-        if source_path:
-            success = _delete_file(source_path)
-            updated = _remove_path_from_auth_files_env(source_path)
-            _persist_dashboard_auth_files(updated)
-    elif source_kind == "auth_pool":
-        if source_path and isinstance(source_index, int):
-            success = _remove_auth_from_pool_file(source_path, source_index)
-
-    if success and label:
-        _remove_label_state(label)
-        if reason:
-            eprint(f"INFO: removed ChatGPT auth candidate {label}: {reason}")
-        else:
-            eprint(f"INFO: removed ChatGPT auth candidate {label}")
-    return success
-
-
 def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:
     access_token, account_id, id_token = load_chatgpt_tokens()
     if not account_id:
@@ -696,43 +581,25 @@ def _get_cooldown_until(label: str) -> float:
             return 0.0
 
 
-def _set_auth_pool_state(
-    label: str,
-    *,
-    status: str,
-    cooldown_until: float,
-    failures: int,
-    last_status: int | None,
-    last_error: str,
-    classification: str,
-    raw_code: str | None = None,
-    raw_message: str | None = None,
-) -> None:
-    with _AUTH_POOL_STATE_LOCK:
-        state = dict(_AUTH_POOL_STATE.get(label) or {})
-        state["status"] = status
-        state["cooldown_until"] = cooldown_until
-        state["failures"] = failures
-        state["last_status"] = last_status
-        state["last_error"] = last_error
-        state["last_classification"] = classification
-        state["last_raw_code"] = raw_code or ""
-        state["last_raw_message"] = raw_message or last_error or ""
-        state["updated_at"] = time.time()
-        _AUTH_POOL_STATE[label] = state
-
-
 def _apply_account_cooldown(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    if len(candidates) <= 1:
+        return candidates
     now = time.time()
     available: List[Dict[str, str]] = []
+    cooling: List[tuple[float, Dict[str, str]]] = []
     for candidate in candidates:
         label = candidate.get("label") or ""
         cooldown_until = _get_cooldown_until(label)
-        if cooldown_until <= now:
+        if cooldown_until > now:
+            cooling.append((cooldown_until, candidate))
+        else:
             available.append(candidate)
     if available:
         return available
-    return []
+    if not cooling:
+        return candidates
+    cooling.sort(key=lambda x: x[0])
+    return [item[1] for item in cooling]
 
 
 def mark_chatgpt_auth_result(
@@ -741,10 +608,6 @@ def mark_chatgpt_auth_result(
     success: bool,
     status_code: int | None = None,
     error_message: str | None = None,
-    classification: str | None = None,
-    cooldown_seconds: int | None = None,
-    raw_code: str | None = None,
-    raw_message: str | None = None,
 ) -> None:
     if not isinstance(label, str) or not label:
         return
@@ -753,85 +616,28 @@ def mark_chatgpt_auth_result(
     with _AUTH_POOL_STATE_LOCK:
         state = dict(_AUTH_POOL_STATE.get(label) or {})
         if success:
-            _set_auth_pool_state(
-                label,
-                status="ready",
-                cooldown_until=0.0,
-                failures=0,
-                last_status=status_code if isinstance(status_code, int) else 200,
-                last_error="",
-                classification="ready",
-                raw_code=raw_code,
-                raw_message=raw_message,
-            )
+            state["failures"] = 0
+            state["cooldown_until"] = 0.0
+            state["last_status"] = status_code if isinstance(status_code, int) else 200
+            state["last_error"] = ""
+            state["updated_at"] = now
+            _AUTH_POOL_STATE[label] = state
             return
 
         failures = int(state.get("failures") or 0) + 1
-        category = (classification or "").strip() or "generic_failure"
-        if isinstance(cooldown_seconds, int) and cooldown_seconds > 0:
-            cooldown = cooldown_seconds
-            state_status = "cooldown_insufficient_balance" if category == "insufficient_balance" else "temporary_failure"
-        elif isinstance(status_code, int) and status_code in (401, 403):
+        if isinstance(status_code, int) and status_code in (401, 403):
             base = 5
-            cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
-            state_status = "temporary_failure"
         elif isinstance(status_code, int) and status_code == 429:
             base = 2
-            cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
-            state_status = "temporary_failure"
         else:
             base = 1
-            cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
-            state_status = "temporary_failure"
+        cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
         state["failures"] = failures
+        state["cooldown_until"] = now + float(cooldown)
+        state["last_status"] = status_code
+        state["last_error"] = error_message or ""
+        state["updated_at"] = now
         _AUTH_POOL_STATE[label] = state
-        _set_auth_pool_state(
-            label,
-            status=state_status,
-            cooldown_until=now + float(cooldown),
-            failures=failures,
-            last_status=status_code,
-            last_error=error_message or "",
-            classification=category,
-            raw_code=raw_code,
-            raw_message=raw_message,
-        )
-
-
-def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, Any]) -> str:
-    label = str(candidate.get("label") or "").strip()
-    classification = classify_error(info)
-    raw_status = info.get("raw_status") if isinstance(info.get("raw_status"), int) else None
-    raw_code = info.get("raw_code") if isinstance(info.get("raw_code"), str) else None
-    raw_message = info.get("raw_message") if isinstance(info.get("raw_message"), str) else None
-
-    if classification == "insufficient_balance":
-        mark_chatgpt_auth_result(
-            label,
-            success=False,
-            status_code=raw_status,
-            error_message=raw_message,
-            classification=classification,
-            cooldown_seconds=5 * 60 * 60,
-            raw_code=raw_code,
-            raw_message=raw_message,
-        )
-        return classification
-
-    if classification == "account_invalid":
-        remove_chatgpt_auth_candidate(candidate, reason=raw_message or "Account invalid")
-        return classification
-
-    mark_chatgpt_auth_result(
-        label,
-        success=False,
-        status_code=raw_status,
-        error_message=raw_message,
-        classification=classification,
-        raw_code=raw_code,
-        raw_message=raw_message,
-    )
-    return classification
 
 
 def get_chatgpt_auth_pool_state() -> Dict[str, Dict[str, Any]]:
@@ -854,13 +660,9 @@ def _state_for_label(label: str) -> Dict[str, Any]:
     cooldown_until = float(state.get("cooldown_until") or 0.0)
     remaining = max(0, int(cooldown_until - now))
     return {
-        "status": state.get("status") or "ready",
         "failures": int(state.get("failures") or 0),
         "last_status": state.get("last_status"),
         "last_error": state.get("last_error") or "",
-        "last_classification": state.get("last_classification") or "",
-        "last_raw_code": state.get("last_raw_code") or "",
-        "last_raw_message": state.get("last_raw_message") or "",
         "cooldown_remaining": remaining,
         "updated_at": state.get("updated_at"),
     }
@@ -954,8 +756,8 @@ def _parse_auth_files_env() -> List[str]:
     return paths
 
 
-def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
     paths = _parse_auth_files_env()
     for idx, path in enumerate(paths):
         auth_obj = _read_json_file(path)
@@ -965,13 +767,7 @@ def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dic
         dirname = os.path.basename(os.path.dirname(path))
         filename = os.path.basename(path)
         label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
-        candidate, changed = _candidate_from_auth_obj(
-            auth_obj,
-            label=label,
-            ensure_fresh=ensure_fresh,
-            source_kind="auth_file",
-            source_path=path,
-        )
+        candidate, changed = _candidate_from_auth_obj(auth_obj, label=label, ensure_fresh=ensure_fresh)
         if changed:
             _write_json_file(path, auth_obj)
         if candidate is not None:
@@ -989,7 +785,7 @@ def _extract_pool_accounts(raw_pool: Dict[str, Any] | List[Any]) -> List[Dict[st
     return []
 
 
-def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
+def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, str]]:
     path = _find_auth_file_path("auth_pool.json")
     if not path:
         return []
@@ -1001,7 +797,7 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
         return []
 
     changed = False
-    out: List[Dict[str, Any]] = []
+    out: List[Dict[str, str]] = []
     for idx, account_obj in enumerate(accounts):
         label = ""
         for key in ("name", "alias", "label"):
@@ -1011,14 +807,7 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
                 break
         if not label:
             label = f"pool-{idx + 1}"
-        candidate, account_changed = _candidate_from_auth_obj(
-            account_obj,
-            label=label,
-            ensure_fresh=ensure_fresh,
-            source_kind="auth_pool",
-            source_path=path,
-            source_index=idx,
-        )
+        candidate, account_changed = _candidate_from_auth_obj(account_obj, label=label, ensure_fresh=ensure_fresh)
         changed = changed or account_changed
         if candidate is not None:
             out.append(candidate)
@@ -1028,7 +817,7 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
     return out
 
 
-def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
+def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, str]]:
     candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
     if not candidates:
         candidates = _load_auth_candidates_from_pool_file(ensure_fresh=ensure_fresh)
@@ -1037,16 +826,7 @@ def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dic
         if not account_id:
             account_id = _derive_account_id(id_token)
         if isinstance(access_token, str) and access_token and isinstance(account_id, str) and account_id:
-            candidates = [
-                {
-                    "label": "default",
-                    "access_token": access_token,
-                    "account_id": account_id,
-                    "source_kind": "default_auth",
-                    "source_path": _find_auth_file_path("auth.json") or "",
-                    "source_index": None,
-                }
-            ]
+            candidates = [{"label": "default", "access_token": access_token, "account_id": account_id}]
     candidates = _apply_account_cooldown(candidates)
     return _ordered_candidates_by_strategy(candidates)
 
@@ -1071,7 +851,6 @@ def sse_translate_chat(
     saw_any_summary = False
     pending_summary_paragraph = False
     upstream_usage = None
-    has_visible_output = False
     ws_state: dict[str, Any] = {}
     ws_index: dict[str, int] = {}
     ws_next_index: int = 0
@@ -1173,7 +952,6 @@ def sse_translate_chat(
                     think_open = False
                     think_closed = True
                 saw_output = True
-                has_visible_output = True
                 chunk = {
                     "id": response_id,
                     "object": "chat.completion.chunk",
@@ -1226,7 +1004,6 @@ def sse_translate_chat(
                             ],
                         }
                         yield f"data: {json.dumps(delta_chunk)}\n\n".encode("utf-8")
-                        has_visible_output = True
 
                         finish_chunk = {
                             "id": response_id,
@@ -1347,17 +1124,9 @@ def sse_translate_chat(
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
                 sent_stop_chunk = True
             elif kind == "response.failed":
-                error_info = error_info_from_event_response(
-                    getattr(upstream, "chatmock_source", "upstream"),
-                    "stream",
-                    evt.get("response"),
-                )
-                if not has_visible_output and should_retry_next_candidate(error_info):
-                    raise RetryableStreamError(error_info)
-                chunk = {"error": normalized_error_payload(error_info)}
+                err = evt.get("response", {}).get("error", {}).get("message", "response.failed")
+                chunk = {"error": {"message": err}}
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                yield b"data: [DONE]\n\n"
-                break
             elif kind == "response.completed":
                 m = _extract_usage(evt)
                 if m:
@@ -1406,7 +1175,6 @@ def sse_translate_chat(
 def sse_translate_text(upstream, model: str, created: int, verbose: bool = False, vlog=None, *, include_usage: bool = False):
     response_id = "cmpl-stream"
     upstream_usage = None
-    has_visible_output = False
     
     def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
         try:
@@ -1449,7 +1217,6 @@ def sse_translate_text(upstream, model: str, created: int, verbose: bool = False
                 response_id = evt["response"].get("id") or response_id
             if kind == "response.output_text.delta":
                 delta_text = evt.get("delta") or ""
-                has_visible_output = has_visible_output or bool(delta_text)
                 chunk = {
                     "id": response_id,
                     "object": "text_completion.chunk",
@@ -1467,18 +1234,6 @@ def sse_translate_text(upstream, model: str, created: int, verbose: bool = False
                     "choices": [{"index": 0, "text": "", "finish_reason": "stop"}],
                 }
                 yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-            elif kind == "response.failed":
-                error_info = error_info_from_event_response(
-                    getattr(upstream, "chatmock_source", "upstream"),
-                    "stream",
-                    evt.get("response"),
-                )
-                if not has_visible_output and should_retry_next_candidate(error_info):
-                    raise RetryableStreamError(error_info)
-                chunk = {"error": normalized_error_payload(error_info)}
-                yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                yield b"data: [DONE]\n\n"
-                break
             elif kind == "response.completed":
                 m = _extract_usage(evt)
                 if m:

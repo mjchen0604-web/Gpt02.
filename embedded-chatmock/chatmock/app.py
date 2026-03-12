@@ -6,7 +6,6 @@ from .config import (
     BASE_INSTRUCTIONS,
     CODEX_APP_SERVER_URL_DEFAULT,
     GPT5_CODEX_INSTRUCTIONS,
-    GPT5_HYBRID_INSTRUCTIONS,
     UPSTREAM_MODE_DEFAULT,
 )
 from .codex_manager import CodexAppServerPoolManager
@@ -37,7 +36,9 @@ def create_app(
     if normalized_service_tier in ("off", "none", "unset"):
         normalized_service_tier = None
     normalized_upstream_mode = (
-        "codex-app-server"
+        upstream_mode.strip().lower()
+        if isinstance(upstream_mode, str) and upstream_mode.strip()
+        else UPSTREAM_MODE_DEFAULT
     )
     normalized_codex_app_server_url = (
         codex_app_server_url.strip()
@@ -54,7 +55,6 @@ def create_app(
         DEBUG_MODEL=debug_model,
         BASE_INSTRUCTIONS=BASE_INSTRUCTIONS,
         GPT5_CODEX_INSTRUCTIONS=GPT5_CODEX_INSTRUCTIONS,
-        GPT5_HYBRID_INSTRUCTIONS=GPT5_HYBRID_INSTRUCTIONS,
         EXPOSE_REASONING_MODELS=bool(expose_reasoning_models),
         DEFAULT_WEB_SEARCH=bool(default_web_search),
         SERVICE_TIER=normalized_service_tier,
