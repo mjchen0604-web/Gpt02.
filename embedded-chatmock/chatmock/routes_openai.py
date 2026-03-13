@@ -9,7 +9,6 @@ from flask import Blueprint, Response, current_app, jsonify, make_response, requ
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
-from .payload_overrides import apply_payload_overrides
 from .reasoning import (
     allowed_efforts_for_model,
     apply_reasoning_to_message,
@@ -492,7 +491,6 @@ def chat_completions() -> Response:
             return jsonify(err), 400
 
     requested_model = payload.get("model")
-    payload = apply_payload_overrides(payload, requested_model)
     model = normalize_model_name(requested_model, debug_model)
     messages = payload.get("messages")
     if messages is None and isinstance(payload.get("prompt"), str):
@@ -905,7 +903,6 @@ def completions() -> Response:
         return jsonify(err), 400
 
     requested_model = payload.get("model")
-    payload = apply_payload_overrides(payload, requested_model)
     model = normalize_model_name(requested_model, debug_model)
     prompt = payload.get("prompt")
     if isinstance(prompt, list):
