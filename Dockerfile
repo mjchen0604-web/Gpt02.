@@ -27,11 +27,13 @@ RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$
 
 FROM node:22-bookworm-slim
 
+ARG OPENAI_CODEX_NPM_VERSION=0.115.0-alpha.11
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates tzdata wget python3 python3-pip python-is-python3 \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates \
-    && npm install -g @openai/codex
+    && npm install -g @openai/codex@${OPENAI_CODEX_NPM_VERSION}
 
 ENV PYTHONUNBUFFERED=1
 ENV CHATCORE_INTERNAL_CHAT_HOST=127.0.0.1
