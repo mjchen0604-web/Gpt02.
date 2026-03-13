@@ -23,7 +23,6 @@ func TestApplyPlaygroundDefaultsToOpenAIRequest(t *testing.T) {
 		"inputs": map[string]any{
 			"temperature":       0.2,
 			"top_p":             0.5,
-			"max_tokens":        2048,
 			"frequency_penalty": 0.1,
 			"presence_penalty":  0.3,
 			"seed":              7,
@@ -31,7 +30,6 @@ func TestApplyPlaygroundDefaultsToOpenAIRequest(t *testing.T) {
 		"parameterEnabled": map[string]any{
 			"temperature":       true,
 			"top_p":             true,
-			"max_tokens":        true,
 			"frequency_penalty": true,
 			"presence_penalty":  true,
 			"seed":              true,
@@ -45,9 +43,6 @@ func TestApplyPlaygroundDefaultsToOpenAIRequest(t *testing.T) {
 	}
 	if req.TopP == nil || *req.TopP != 0.9 {
 		t.Fatalf("expected explicit top_p to win, got %#v", req.TopP)
-	}
-	if req.MaxTokens == nil || *req.MaxTokens != 2048 {
-		t.Fatalf("expected max_tokens to be injected, got %#v", req.MaxTokens)
 	}
 	if req.FrequencyPenalty == nil || *req.FrequencyPenalty != 0.1 {
 		t.Fatalf("expected frequency_penalty to be injected, got %#v", req.FrequencyPenalty)
@@ -69,13 +64,11 @@ func TestApplyPlaygroundDefaultsToResponsesRequest(t *testing.T) {
 		"inputs": map[string]any{
 			"temperature":       0.4,
 			"top_p":             0.2,
-			"max_tokens":        1024,
 			"frequency_penalty": 0.5,
 		},
 		"parameterEnabled": map[string]any{
 			"temperature":       true,
 			"top_p":             true,
-			"max_tokens":        true,
 			"frequency_penalty": true,
 		},
 	}
@@ -87,9 +80,6 @@ func TestApplyPlaygroundDefaultsToResponsesRequest(t *testing.T) {
 	}
 	if req.TopP == nil || *req.TopP != 0.95 {
 		t.Fatalf("expected explicit top_p to win, got %#v", req.TopP)
-	}
-	if req.MaxOutputTokens == nil || *req.MaxOutputTokens != 1024 {
-		t.Fatalf("expected max_output_tokens to be injected, got %#v", req.MaxOutputTokens)
 	}
 }
 
@@ -150,7 +140,7 @@ func TestBuildPlaygroundRuntimePreviewMergesScopes(t *testing.T) {
 	if err := model.UpdateOption("PlaygroundGlobalDefaults", `{"inputs":{"temperature":0.7,"top_p":0.8},"parameterEnabled":{"temperature":true,"top_p":true}}`); err != nil {
 		t.Fatalf("failed to save global defaults: %v", err)
 	}
-	if err := model.UpdateOption("PlaygroundAdminDefaults", `{"inputs":{"temperature":0.4,"max_tokens":2048},"parameterEnabled":{"temperature":true,"max_tokens":true}}`); err != nil {
+	if err := model.UpdateOption("PlaygroundAdminDefaults", `{"inputs":{"temperature":0.4},"parameterEnabled":{"temperature":true}}`); err != nil {
 		t.Fatalf("failed to save admin defaults: %v", err)
 	}
 
@@ -184,9 +174,6 @@ func TestBuildPlaygroundRuntimePreviewMergesScopes(t *testing.T) {
 	if mergedInputs["temperature"] != 0.2 {
 		t.Fatalf("expected personal temperature to win, got %#v", mergedInputs["temperature"])
 	}
-	if mergedInputs["max_tokens"] != 2048.0 && mergedInputs["max_tokens"] != 2048 {
-		t.Fatalf("expected admin max_tokens to be present, got %#v", mergedInputs["max_tokens"])
-	}
 	if mergedInputs["seed"] != 9.0 && mergedInputs["seed"] != 9 {
 		t.Fatalf("expected personal seed to be present, got %#v", mergedInputs["seed"])
 	}
@@ -207,7 +194,7 @@ func TestApplyPlaygroundRuntimeDefaultsFromStoredScopes(t *testing.T) {
 	if err := model.UpdateOption("PlaygroundGlobalDefaults", `{"inputs":{"temperature":0.7,"top_p":0.6},"parameterEnabled":{"temperature":true,"top_p":true}}`); err != nil {
 		t.Fatalf("failed to save global defaults: %v", err)
 	}
-	if err := model.UpdateOption("PlaygroundAdminDefaults", `{"inputs":{"max_tokens":4096},"parameterEnabled":{"max_tokens":true}}`); err != nil {
+	if err := model.UpdateOption("PlaygroundAdminDefaults", `{}`); err != nil {
 		t.Fatalf("failed to save admin defaults: %v", err)
 	}
 
@@ -241,9 +228,6 @@ func TestApplyPlaygroundRuntimeDefaultsFromStoredScopes(t *testing.T) {
 	}
 	if req.TopP == nil || *req.TopP != 0.99 {
 		t.Fatalf("expected explicit top_p to be preserved, got %#v", req.TopP)
-	}
-	if req.MaxTokens == nil || *req.MaxTokens != 4096 {
-		t.Fatalf("expected admin max_tokens to be injected, got %#v", req.MaxTokens)
 	}
 	if req.Seed == nil || *req.Seed != 11 {
 		t.Fatalf("expected personal seed to be injected, got %#v", req.Seed)

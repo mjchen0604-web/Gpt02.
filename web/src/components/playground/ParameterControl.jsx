@@ -21,7 +21,6 @@ import React from 'react';
 import { Input, Slider, Typography, Button, Tag } from '@douyinfe/semi-ui';
 import { useTranslation } from 'react-i18next';
 import {
-  Hash,
   Thermometer,
   Target,
   Repeat,
@@ -211,46 +210,6 @@ const ParameterControl = ({
           onChange={(value) => onInputChange('presence_penalty', value)}
           className='mt-2'
           disabled={!parameterEnabled.presence_penalty || disabled}
-        />
-      </div>
-
-      {/* MaxTokens */}
-      <div
-        className={`transition-opacity duration-200 mb-4 ${!parameterEnabled.max_tokens || disabled ? 'opacity-50' : ''}`}
-      >
-        <div className='flex items-center justify-between mb-2'>
-          <div className='flex items-center gap-2'>
-            <Hash size={16} className='text-gray-500' />
-            <Typography.Text strong className='text-sm'>
-              Max Tokens
-            </Typography.Text>
-          </div>
-          <Button
-            theme={parameterEnabled.max_tokens ? 'solid' : 'borderless'}
-            type={parameterEnabled.max_tokens ? 'primary' : 'tertiary'}
-            size='small'
-            icon={
-              parameterEnabled.max_tokens ? (
-                <Check size={10} />
-              ) : (
-                <X size={10} />
-              )
-            }
-            onClick={() => onParameterToggle('max_tokens')}
-            className='!rounded-full !w-4 !h-4 !p-0 !min-w-0'
-            disabled={disabled}
-          />
-        </div>
-        <Input
-          placeholder='MaxTokens'
-          name='max_tokens'
-          required
-          autoComplete='new-password'
-          defaultValue={0}
-          value={inputs.max_tokens}
-          onChange={(value) => onInputChange('max_tokens', value)}
-          className='!rounded-lg'
-          disabled={!parameterEnabled.max_tokens || disabled}
         />
       </div>
 

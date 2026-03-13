@@ -587,7 +587,7 @@ const Playground = () => {
                 onSavePersonalDefaults={savePersonalDefaults}
                 effectHint={
                   applyToRealAPI
-                    ? t('这些配置会直接作用于 Playground 请求；未显式传参的真实 API 请求也会继承这 6 个默认参数。')
+                    ? t('这些配置会直接作用于 Playground 请求；未显式传参的真实 API 请求也会继承这 5 个默认参数。')
                     : t('这些配置会直接作用于 Playground 发出的真实 API 请求。')
                 }
               />

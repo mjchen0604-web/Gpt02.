@@ -14,7 +14,6 @@ var playgroundAllowedInputKeys = map[string]struct{}{
 	"group":             {},
 	"temperature":       {},
 	"top_p":             {},
-	"max_tokens":        {},
 	"frequency_penalty": {},
 	"presence_penalty":  {},
 	"seed":              {},
@@ -26,7 +25,6 @@ var playgroundAllowedInputKeys = map[string]struct{}{
 var playgroundAllowedParameterKeys = map[string]struct{}{
 	"temperature":       {},
 	"top_p":             {},
-	"max_tokens":        {},
 	"frequency_penalty": {},
 	"presence_penalty":  {},
 	"seed":              {},
@@ -35,7 +33,6 @@ var playgroundAllowedParameterKeys = map[string]struct{}{
 var playgroundAllowedPersonalInputKeys = map[string]struct{}{
 	"temperature":       {},
 	"top_p":             {},
-	"max_tokens":        {},
 	"frequency_penalty": {},
 	"presence_penalty":  {},
 	"seed":              {},

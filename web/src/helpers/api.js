@@ -125,7 +125,6 @@ export const buildApiPayload = (
   const parameterMappings = {
     temperature: 'temperature',
     top_p: 'top_p',
-    max_tokens: 'max_tokens',
     frequency_penalty: 'frequency_penalty',
     presence_penalty: 'presence_penalty',
     seed: 'seed',

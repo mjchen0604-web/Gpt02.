@@ -76,7 +76,6 @@ export const DEFAULT_CONFIG = {
     group: '',
     temperature: 0.7,
     top_p: 1,
-    max_tokens: 4096,
     frequency_penalty: 0,
     presence_penalty: 0,
     seed: null,
@@ -87,7 +86,6 @@ export const DEFAULT_CONFIG = {
   parameterEnabled: {
     temperature: true,
     top_p: true,
-    max_tokens: false,
     frequency_penalty: true,
     presence_penalty: true,
     seed: false,
@@ -98,7 +96,6 @@ export const DEFAULT_CONFIG = {
 export const PLAYGROUND_USER_INPUT_KEYS = [
   'temperature',
   'top_p',
-  'max_tokens',
   'frequency_penalty',
   'presence_penalty',
   'seed',
@@ -107,7 +104,6 @@ export const PLAYGROUND_USER_INPUT_KEYS = [
 export const PLAYGROUND_USER_PARAMETER_KEYS = [
   'temperature',
   'top_p',
-  'max_tokens',
   'frequency_penalty',
   'presence_penalty',
   'seed',

@@ -191,7 +191,7 @@ const SettingsPanel = ({
                 {t('作用到真实 API')}
               </Typography.Text>
               <Typography.Text className='text-xs text-gray-500 block mt-1'>
-                {t('开启后，未显式传参的真实 API 请求也会继承这 6 个默认参数。')}
+                {t('开启后，未显式传参的真实 API 请求也会继承这 5 个默认参数。')}
               </Typography.Text>
             </div>
             <Switch

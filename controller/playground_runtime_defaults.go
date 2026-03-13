@@ -133,11 +133,6 @@ func applyPlaygroundDefaultsToOpenAIRequest(req *dto.GeneralOpenAIRequest, confi
 			req.TopP = &value
 		}
 	}
-	if req.MaxTokens == nil && req.MaxCompletionTokens == nil && playgroundParamEnabled(config, "max_tokens") {
-		if value, ok := playgroundUint(config, "max_tokens"); ok {
-			req.MaxTokens = &value
-		}
-	}
 	if req.FrequencyPenalty == nil && playgroundParamEnabled(config, "frequency_penalty") {
 		if value, ok := playgroundFloat(config, "frequency_penalty"); ok {
 			req.FrequencyPenalty = &value
@@ -167,11 +162,6 @@ func applyPlaygroundDefaultsToResponsesRequest(req *dto.OpenAIResponsesRequest, 
 	if req.TopP == nil && playgroundParamEnabled(config, "top_p") {
 		if value, ok := playgroundFloat(config, "top_p"); ok {
 			req.TopP = &value
-		}
-	}
-	if req.MaxOutputTokens == nil && playgroundParamEnabled(config, "max_tokens") {
-		if value, ok := playgroundUint(config, "max_tokens"); ok {
-			req.MaxOutputTokens = &value
 		}
 	}
 }
