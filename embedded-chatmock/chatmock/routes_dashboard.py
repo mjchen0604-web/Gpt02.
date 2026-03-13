@@ -368,6 +368,7 @@ def _apply_settings(settings: Dict[str, Any], *, app=None, persist: bool) -> Dic
     os.environ["CHATGPT_LOCAL_REQUEST_RETRY"] = str(merged["requestRetry"])
     os.environ["CHATGPT_LOCAL_MAX_RETRY_INTERVAL"] = str(merged["maxRetryInterval"])
     os.environ["CHATGPT_LOCAL_AUTH_FILES"] = ",".join(merged["authFiles"])
+    os.environ["CHATGPT_LOCAL_AUTH_FILES_CONFIGURED"] = "1"
 
     os.environ["CHATGPT_LOCAL_REASONING_EFFORT"] = merged["reasoningEffort"]
     os.environ["CHATGPT_LOCAL_REASONING_SUMMARY"] = merged["reasoningSummary"]

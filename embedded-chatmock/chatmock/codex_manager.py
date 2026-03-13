@@ -62,6 +62,11 @@ def _parse_auth_files_env() -> list[str]:
     return paths
 
 
+def _has_explicit_auth_files_config() -> bool:
+    raw_flag = (os.getenv("CHATGPT_LOCAL_AUTH_FILES_CONFIGURED") or "").strip().lower()
+    return raw_flag in ("1", "true", "yes", "on")
+
+
 def _read_auth_payload(path: Path) -> dict[str, Any] | None:
     try:
         with open(path, "r", encoding="utf-8") as fp:
@@ -543,6 +548,9 @@ class CodexAppServerPoolManager:
             )
 
         if entries:
+            return entries
+
+        if auth_files is not None or _has_explicit_auth_files_config():
             return entries
 
         default_home = _default_codex_home()

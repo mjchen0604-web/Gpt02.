@@ -476,6 +476,14 @@ def _persist_dashboard_auth_files(paths: List[str]) -> bool:
     return _write_json_file(path, payload)
 
 
+def _has_explicit_auth_files_config() -> bool:
+    raw_flag = (os.getenv("CHATGPT_LOCAL_AUTH_FILES_CONFIGURED") or "").strip().lower()
+    if raw_flag in ("1", "true", "yes", "on"):
+        return True
+    stored = _load_dashboard_settings()
+    return isinstance(stored, dict) and "authFiles" in stored
+
+
 def _remove_path_from_auth_files_env(path: str) -> List[str]:
     current = _parse_auth_files_env()
     updated = [item for item in current if item != path]
@@ -652,9 +660,9 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
 
 def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, str]]:
     candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
-    if not candidates:
+    if not candidates and not _has_explicit_auth_files_config():
         candidates = _load_auth_candidates_from_pool_file(ensure_fresh=ensure_fresh)
-    if not candidates:
+    if not candidates and not _has_explicit_auth_files_config():
         access_token, account_id, id_token = load_chatgpt_tokens(ensure_fresh=ensure_fresh)
         if not account_id:
             account_id = _derive_account_id(id_token)
@@ -930,6 +938,7 @@ def get_chatgpt_auth_records() -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
 
     auth_files = _parse_auth_files_env()
+    explicit_auth_files = _has_explicit_auth_files_config()
     if auth_files:
         for idx, path in enumerate(auth_files):
             auth_obj = _read_json_file(path)
@@ -947,6 +956,9 @@ def get_chatgpt_auth_records() -> List[Dict[str, Any]]:
                 )
                 continue
             records.append(_auth_record_from_obj(auth_obj, label=label, source=path))
+        return records
+
+    if explicit_auth_files:
         return records
 
     pool_path = _find_auth_file_path("auth_pool.json")
