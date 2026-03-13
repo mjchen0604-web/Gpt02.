@@ -531,6 +531,24 @@ def _fast_instance_map() -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _is_active_account_record(record: Dict[str, Any]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    status = str(record.get("status") or "").strip().lower()
+    last_classification = str(record.get("last_classification") or "").strip().lower()
+    raw_code = str(record.get("last_raw_code") or "").strip().lower()
+    raw_message = str(record.get("last_raw_message") or "").strip().lower()
+    if status == "removed_invalid":
+        return False
+    if last_classification == "account_invalid":
+        return False
+    if raw_code == "deactivated_workspace":
+        return False
+    if "deactivated_workspace" in raw_message:
+        return False
+    return True
+
+
 @dashboard_bp.get("/dashboard")
 @dashboard_bp.get("/dashboard/")
 def dashboard_index():
@@ -550,6 +568,7 @@ def dashboard_css():
 @dashboard_bp.get("/api/health")
 def dashboard_health():
     records = get_chatgpt_auth_records()
+    active_records = [record for record in records if _is_active_account_record(record)]
     models = _model_ids(bool(current_app.config.get("EXPOSE_REASONING_MODELS")))
     service = _service_status()
     payload = {
@@ -557,7 +576,7 @@ def dashboard_health():
         "service": service,
         "listening": bool(service.get("listening")),
         "models": {"count": len(models), "ids": models, "error": ""},
-        "accounts": {"count": len(records)},
+        "accounts": {"count": len(active_records), "rawCount": len(records)},
         "routing": {
             "strategy": (os.getenv("CHATGPT_LOCAL_ROUTING_STRATEGY") or "round-robin"),
             "request_retry": get_request_retry_limit(),
@@ -585,7 +604,8 @@ def dashboard_accounts():
             record["fast_cooldown_remaining"] = instance.get("cooldownRemaining")
             record["fast_request_count"] = instance.get("requestCount")
             record["fast_request_successes"] = instance.get("requestSuccesses")
-    return jsonify({"count": len(records), "accounts": records})
+    active_records = [record for record in records if _is_active_account_record(record)]
+    return jsonify({"count": len(active_records), "rawCount": len(records), "accounts": active_records})
 
 
 @dashboard_bp.get("/api/models")

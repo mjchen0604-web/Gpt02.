@@ -21,6 +21,9 @@ _AUTH_POOL_RR_LOCK = threading.Lock()
 _AUTH_POOL_RR_INDEX = 0
 _AUTH_POOL_STATE_LOCK = threading.RLock()
 _AUTH_POOL_STATE: Dict[str, Dict[str, Any]] = {}
+_INVALID_AUTH_LOCK = threading.RLock()
+_INVALID_AUTH_LABELS: set[str] = set()
+_INVALID_AUTH_ACCOUNT_IDS: set[str] = set()
 
 
 def eprint(*args, **kwargs) -> None:
@@ -499,6 +502,31 @@ def _remove_label_state(label: str) -> None:
         _AUTH_POOL_STATE.pop(label, None)
 
 
+def _mark_invalid_auth_candidate(*, label: str = "", account_id: str = "") -> None:
+    with _INVALID_AUTH_LOCK:
+        if isinstance(label, str) and label.strip():
+            _INVALID_AUTH_LABELS.add(label.strip())
+        if isinstance(account_id, str) and account_id.strip():
+            _INVALID_AUTH_ACCOUNT_IDS.add(account_id.strip())
+
+
+def _clear_invalid_auth_candidate(*, label: str = "", account_id: str = "") -> None:
+    with _INVALID_AUTH_LOCK:
+        if isinstance(label, str) and label.strip():
+            _INVALID_AUTH_LABELS.discard(label.strip())
+        if isinstance(account_id, str) and account_id.strip():
+            _INVALID_AUTH_ACCOUNT_IDS.discard(account_id.strip())
+
+
+def _is_invalid_auth_candidate(*, label: str = "", account_id: str = "") -> bool:
+    with _INVALID_AUTH_LOCK:
+        if isinstance(label, str) and label.strip() and label.strip() in _INVALID_AUTH_LABELS:
+            return True
+        if isinstance(account_id, str) and account_id.strip() and account_id.strip() in _INVALID_AUTH_ACCOUNT_IDS:
+            return True
+    return False
+
+
 def _label_for_auth_file_path(path: str) -> str:
     dirname = os.path.basename(os.path.dirname(path))
     filename = os.path.basename(path)
@@ -659,6 +687,9 @@ def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dic
         dirname = os.path.basename(os.path.dirname(path))
         filename = os.path.basename(path)
         label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
+        account_id = _account_id_from_auth_obj(auth_obj)
+        if _is_invalid_auth_candidate(label=label, account_id=account_id):
+            continue
         candidate, changed = _candidate_from_auth_obj(
             auth_obj,
             label=label,
@@ -695,6 +726,9 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
                 break
         if not label:
             label = f"pool-{idx + 1}"
+        account_id = _account_id_from_auth_obj(account_obj)
+        if _is_invalid_auth_candidate(label=label, account_id=account_id):
+            continue
         candidate, account_changed = _candidate_from_auth_obj(
             account_obj,
             label=label,
@@ -741,7 +775,13 @@ def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dic
         access_token, account_id, id_token = load_chatgpt_tokens(ensure_fresh=ensure_fresh)
         if not account_id:
             account_id = _derive_account_id(id_token)
-        if isinstance(access_token, str) and access_token and isinstance(account_id, str) and account_id:
+        if (
+            isinstance(access_token, str)
+            and access_token
+            and isinstance(account_id, str)
+            and account_id
+            and not _is_invalid_auth_candidate(label="default", account_id=account_id)
+        ):
             candidates = [{
                 "label": "default",
                 "access_token": access_token,
@@ -879,6 +919,7 @@ def mark_chatgpt_auth_result(
     with _AUTH_POOL_STATE_LOCK:
         state = dict(_AUTH_POOL_STATE.get(label) or {})
         if success:
+            _clear_invalid_auth_candidate(label=label)
             _set_auth_pool_state(
                 label,
                 status="ready",
@@ -924,6 +965,7 @@ def mark_chatgpt_auth_result(
 
 def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, Any]) -> str:
     label = str(candidate.get("label") or "").strip()
+    account_id = str(candidate.get("account_id") or "").strip()
     classification = classify_error(info)
     raw_status = info.get("raw_status") if isinstance(info.get("raw_status"), int) else None
     raw_code = info.get("raw_code") if isinstance(info.get("raw_code"), str) else None
@@ -943,6 +985,7 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
         return classification
 
     if classification == "account_invalid":
+        _mark_invalid_auth_candidate(label=label, account_id=account_id)
         remove_chatgpt_auth_candidate(candidate, reason=raw_message or "Account invalid")
         return classification
 
