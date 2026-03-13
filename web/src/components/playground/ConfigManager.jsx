@@ -27,6 +27,7 @@ import {
   clearConfig,
   hasStoredConfig,
   getConfigTimestamp,
+  saveConfig,
 } from './configStorage';
 
 const ConfigManager = ({
@@ -35,6 +36,8 @@ const ConfigManager = ({
   onConfigReset,
   styleState,
   messages,
+  adminControls,
+  onSavePersonalDefaults,
 }) => {
   const { t } = useTranslation();
   const fileInputRef = useRef(null);
@@ -66,6 +69,24 @@ const ConfigManager = ({
 
   const handleImportClick = () => {
     fileInputRef.current?.click();
+  };
+
+  const handleSavePersonalDefaults = async () => {
+    try {
+      saveConfig(currentConfig);
+      if (onSavePersonalDefaults) {
+        await onSavePersonalDefaults();
+      }
+      Toast.success({
+        content: t('个人默认已保存'),
+        duration: 3,
+      });
+    } catch (error) {
+      Toast.error({
+        content: t('保存个人默认失败: ') + error.message,
+        duration: 3,
+      });
+    }
   };
 
   const handleFileChange = async (event) => {
@@ -158,6 +179,20 @@ const ConfigManager = ({
   const dropdownItems = [
     {
       node: 'item',
+      name: 'save-personal-defaults',
+      onClick: handleSavePersonalDefaults,
+      children: (
+        <div className='flex items-center gap-2'>
+          <Settings2 size={14} />
+          {t('保存为个人默认')}
+        </div>
+      ),
+    },
+    {
+      node: 'divider',
+    },
+    {
+      node: 'item',
       name: 'export',
       onClick: handleExport,
       children: (
@@ -193,6 +228,34 @@ const ConfigManager = ({
       ),
     },
   ];
+
+  if (adminControls?.enabled) {
+    dropdownItems.splice(2, 0,
+      {
+        node: 'item',
+        name: 'save-admin-defaults',
+        onClick: () => adminControls.onSaveDefaults?.('admin'),
+        children: (
+          <div className='flex items-center gap-2'>
+            <Settings2 size={14} />
+            {t('保存为管理员默认')}
+          </div>
+        ),
+      },
+      {
+        node: 'item',
+        name: 'save-global-defaults',
+        onClick: () => adminControls.onSaveDefaults?.('global'),
+        children: (
+          <div className='flex items-center gap-2'>
+            <Settings2 size={14} />
+            {t('保存为全局默认')}
+          </div>
+        ),
+      },
+      { node: 'divider' },
+    );
+  }
 
   if (styleState.isMobile) {
     // 移动端显示简化的下拉菜单
@@ -244,6 +307,18 @@ const ConfigManager = ({
 
       {/* 导出和导入按钮 */}
       <div className='flex gap-2'>
+        {!adminControls?.enabled && (
+          <Button
+            icon={<Settings2 size={12} />}
+            size='small'
+            theme='solid'
+            type='secondary'
+            onClick={handleSavePersonalDefaults}
+            className='!rounded-lg flex-1 !text-xs !h-7'
+          >
+            {t('个人默认')}
+          </Button>
+        )}
         <Button
           icon={<Download size={12} />}
           size='small'
@@ -266,6 +341,38 @@ const ConfigManager = ({
           {t('导入')}
         </Button>
       </div>
+
+      {adminControls?.enabled && (
+        <div className='flex gap-2'>
+          <Button
+            size='small'
+            theme='solid'
+            type='primary'
+            onClick={handleSavePersonalDefaults}
+            className='!rounded-lg flex-1 !text-xs !h-7'
+          >
+            {t('个人默认')}
+          </Button>
+          <Button
+            size='small'
+            theme='outline'
+            type='secondary'
+            onClick={() => adminControls.onSaveDefaults?.('admin')}
+            className='!rounded-lg flex-1 !text-xs !h-7'
+          >
+            {t('管理员默认')}
+          </Button>
+          <Button
+            size='small'
+            theme='outline'
+            type='warning'
+            onClick={() => adminControls.onSaveDefaults?.('global')}
+            className='!rounded-lg flex-1 !text-xs !h-7'
+          >
+            {t('全局默认')}
+          </Button>
+        </div>
+      )}
 
       <input
         ref={fileInputRef}

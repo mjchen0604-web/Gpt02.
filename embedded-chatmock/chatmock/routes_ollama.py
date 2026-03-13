@@ -31,7 +31,6 @@ from .utils import (
     RetryableStreamError,
     convert_chat_messages_to_responses_input,
     convert_tools_chat_to_responses,
-    get_effective_chatgpt_auth_candidates,
 )
 
 
@@ -93,14 +92,9 @@ def _instructions_for_model(model: str) -> str:
     return base
 
 
-def _upstream_attempt_limit(is_stream: bool, configured_upstream: str) -> int:
+def _upstream_attempt_limit(is_stream: bool) -> int:
     if is_stream:
         return 1
-    if configured_upstream == "chatgpt-backend":
-        try:
-            return max(1, len(get_effective_chatgpt_auth_candidates(ensure_fresh=True) or []))
-        except Exception:
-            return 1
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
     if manager is not None and hasattr(manager, "get_request_candidates"):
         try:
@@ -156,8 +150,7 @@ def ollama_tags() -> Response:
         "gpt-5.1-codex",
         "gpt-5.1-codex-max",
         "gpt-5.1-codex-mini",
-        "codex-mini",
-    ]
+]
     if expose_variants:
         model_ids.extend(
             [
@@ -360,8 +353,8 @@ def ollama_chat() -> Response:
     model_reasoning = extract_reasoning_from_model_name(model)
     normalized_model = normalize_model_name(model)
     service_tier = _resolve_service_tier(payload, model)
-    configured_upstream = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
-    attempt_limit = _upstream_attempt_limit(stream_req, configured_upstream)
+    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
+    attempt_limit = _upstream_attempt_limit(stream_req)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     for attempt_index in range(attempt_limit):
@@ -695,7 +688,7 @@ def ollama_chat() -> Response:
             status=200,
             mimetype="application/x-ndjson",
         )
-        if service_tier:
+        if expose_service_tier and service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
@@ -803,15 +796,15 @@ def ollama_chat() -> Response:
         "done": True,
         "done_reason": "tool_calls" if tool_calls else "stop",
     }
-    if observed_service_tier:
+    if expose_service_tier and observed_service_tier:
         out_json["service_tier"] = observed_service_tier
     out_json.update(_OLLAMA_FAKE_EVAL)
     if verbose:
         _log_json("OUT POST /api/chat", out_json)
     resp = make_response(jsonify(out_json), 200)
-    if service_tier:
+    if expose_service_tier and service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-    if observed_service_tier:
+    if expose_service_tier and observed_service_tier:
         resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)

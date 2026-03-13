@@ -24,7 +24,6 @@ from .upstream_errors import (
     should_retry_next_candidate,
 )
 from .upstream import normalize_model_name, start_upstream_request
-from .utils import get_effective_chatgpt_auth_candidates
 
 
 anthropic_bp = Blueprint("anthropic", __name__)
@@ -49,14 +48,9 @@ def _instructions_for_model(model: str) -> str:
     return base
 
 
-def _upstream_attempt_limit(is_stream: bool, configured_upstream: str) -> int:
+def _upstream_attempt_limit(is_stream: bool) -> int:
     if is_stream:
         return 1
-    if configured_upstream == "chatgpt-backend":
-        try:
-            return max(1, len(get_effective_chatgpt_auth_candidates(ensure_fresh=True) or []))
-        except Exception:
-            return 1
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
     if manager is not None and hasattr(manager, "get_request_candidates"):
         try:
@@ -574,8 +568,8 @@ def messages() -> Response:
 
     model_out = requested_model or model
     is_stream = bool(payload.get("stream"))
-    configured_upstream = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
-    attempt_limit = _upstream_attempt_limit(is_stream, configured_upstream)
+    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
+    attempt_limit = _upstream_attempt_limit(is_stream)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     for attempt_index in range(attempt_limit):
@@ -628,7 +622,7 @@ def messages() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-        if service_tier:
+        if expose_service_tier and service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
@@ -730,15 +724,15 @@ def messages() -> Response:
         "stop_sequence": None,
         "usage": {"input_tokens": usage_in, "output_tokens": usage_out},
     }
-    if observed_service_tier:
+    if expose_service_tier and observed_service_tier:
         message_obj["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/messages", message_obj)
 
     resp = make_response(jsonify(message_obj), upstream.status_code)
-    if service_tier:
+    if expose_service_tier and service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-    if observed_service_tier:
+    if expose_service_tier and observed_service_tier:
         resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)

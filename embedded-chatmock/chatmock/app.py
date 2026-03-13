@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from flask import Flask, jsonify
 
 from .config import (
@@ -30,6 +32,12 @@ def create_app(
     codex_app_server_url: str = CODEX_APP_SERVER_URL_DEFAULT,
 ) -> Flask:
     app = Flask(__name__)
+    expose_service_tier = (
+        os.getenv("CHATMOCK_EXPOSE_SERVICE_TIER") or ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+    expose_thread_ids = (
+        os.getenv("CHATMOCK_EXPOSE_THREAD_IDS") or ""
+    ).strip().lower() in ("1", "true", "yes", "on")
     normalized_service_tier = (
         service_tier.strip().lower() if isinstance(service_tier, str) and service_tier.strip() else None
     )
@@ -60,6 +68,8 @@ def create_app(
         SERVICE_TIER=normalized_service_tier,
         UPSTREAM_MODE=normalized_upstream_mode,
         CODEX_APP_SERVER_URL=normalized_codex_app_server_url,
+        EXPOSE_SERVICE_TIER=bool(expose_service_tier),
+        EXPOSE_THREAD_IDS=bool(expose_thread_ids),
     )
     apply_persisted_dashboard_settings(app)
     manager = CodexAppServerPoolManager(str(app.config.get("CODEX_APP_SERVER_URL") or normalized_codex_app_server_url))

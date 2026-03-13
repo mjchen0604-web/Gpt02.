@@ -209,6 +209,9 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	if ok {
 		channelMeta.ChannelOtherSettings = channelOtherSettings
 	}
+	if channelMeta.ChannelType == constant.ChannelTypeChatCore {
+		channelMeta.ChannelOtherSettings.AllowServiceTier = true
+	}
 
 	if streamSupportedChannels[channelMeta.ChannelType] {
 		channelMeta.SupportStreamOptions = true

@@ -310,7 +310,8 @@ h3 {
 }
 
 .setting-field input,
-.setting-field select {
+.setting-field select,
+.setting-field textarea {
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 8px;
   min-height: 36px;
@@ -319,6 +320,20 @@ h3 {
   font-family: "IBM Plex Mono", monospace;
   font-size: 12px;
   padding: 0 10px;
+}
+
+.setting-field textarea {
+  min-height: 92px;
+  resize: vertical;
+  padding: 10px;
+}
+
+.auth-token-grid {
+  margin-top: 10px;
+}
+
+.auth-token-wide {
+  grid-column: 1 / -1;
 }
 
 .toggle-grid {

@@ -1734,8 +1734,12 @@ const EditChannelModal = (props) => {
       delete settings.vertex_key_type;
     }
 
-    // type === 1 (OpenAI) 或 type === 14 (Claude): 设置字段透传控制（显式保存布尔值）
-    if (localInputs.type === 1 || localInputs.type === 14) {
+    // type === 1 (OpenAI) / 14 (Claude) / 58 (ChatCore): 设置字段透传控制（显式保存布尔值）
+    if (
+      localInputs.type === 1 ||
+      localInputs.type === 14 ||
+      localInputs.type === 58
+    ) {
       settings.allow_service_tier = localInputs.allow_service_tier === true;
       // 仅 OpenAI 渠道需要 store / safety_identifier / include_obfuscation
       if (localInputs.type === 1) {
@@ -3776,8 +3780,8 @@ const EditChannelModal = (props) => {
                       </>
                     )}
 
-                    {/* 字段透传控制 - Claude 渠道 */}
-                    {inputs.type === 14 && (
+                    {/* 字段透传控制 - Claude / ChatCore 渠道 */}
+                    {(inputs.type === 14 || inputs.type === 58) && (
                       <>
                         <div className='mt-4 mb-2 text-sm font-medium text-gray-700'>
                           {t('字段透传控制')}
@@ -3799,21 +3803,23 @@ const EditChannelModal = (props) => {
                           )}
                         />
 
-                        <Form.Switch
-                          field='allow_inference_geo'
-                          label={t('允许 inference_geo 透传')}
-                          checkedText={t('开')}
-                          uncheckedText={t('关')}
-                          onChange={(value) =>
-                            handleChannelOtherSettingsChange(
-                              'allow_inference_geo',
-                              value,
-                            )
-                          }
-                          extraText={t(
-                            'inference_geo 字段用于控制 Claude 数据驻留推理区域。默认关闭以避免未经授权透传地域信息',
-                          )}
-                        />
+                        {inputs.type === 14 && (
+                          <Form.Switch
+                            field='allow_inference_geo'
+                            label={t('允许 inference_geo 透传')}
+                            checkedText={t('开')}
+                            uncheckedText={t('关')}
+                            onChange={(value) =>
+                              handleChannelOtherSettingsChange(
+                                'allow_inference_geo',
+                                value,
+                              )
+                            }
+                            extraText={t(
+                              'inference_geo 字段用于控制 Claude 数据驻留推理区域。默认关闭以避免未经授权透传地域信息',
+                            )}
+                          />
+                        )}
                       </>
                     )}
                   </Card>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Mapping
 
 from flask import Response, jsonify, make_response
@@ -27,6 +28,13 @@ _INVALID_ACCOUNT_KEYWORDS = (
     "suspended",
     "forbidden",
     "disabled",
+)
+
+_PERMISSION_KEYWORDS = (
+    "permission",
+    "not allowed",
+    "access denied",
+    "insufficient permissions",
 )
 
 
@@ -216,7 +224,16 @@ def error_info_from_flask_response(source: str, phase: str, response: Response) 
 
 def classify_error(info: Mapping[str, Any]) -> str:
     category_override = _compact_string(info.get("category_override"))
-    if category_override in ("insufficient_balance", "account_invalid", "generic_failure"):
+    if category_override in (
+        "insufficient_balance",
+        "rate_limited",
+        "account_invalid",
+        "permission_denied",
+        "invalid_request",
+        "not_found",
+        "request_too_large",
+        "generic_failure",
+    ):
         return category_override
     raw_status = info.get("raw_status")
     status = int(raw_status) if isinstance(raw_status, int) else None
@@ -234,64 +251,150 @@ def classify_error(info: Mapping[str, Any]) -> str:
         text_parts.append(_compact_string(raw_body))
     haystack = " ".join(part for part in text_parts if part).lower()
 
-    if status == 429 and any(keyword in haystack for keyword in _INSUFFICIENT_KEYWORDS):
-        return "insufficient_balance"
-    if status in (401, 403) and any(keyword in haystack for keyword in _INVALID_ACCOUNT_KEYWORDS):
+    if status == 429:
+        if any(keyword in haystack for keyword in _INSUFFICIENT_KEYWORDS):
+            return "insufficient_balance"
+        return "rate_limited"
+    if status == 401:
         return "account_invalid"
+    if status == 403:
+        if any(keyword in haystack for keyword in _INVALID_ACCOUNT_KEYWORDS):
+            return "account_invalid"
+        return "permission_denied"
     if status == 402:
         if any(keyword in haystack for keyword in _INSUFFICIENT_KEYWORDS):
             return "insufficient_balance"
         if any(keyword in haystack for keyword in _INVALID_ACCOUNT_KEYWORDS):
             return "account_invalid"
+        return "rate_limited"
+    if status in (400, 422):
+        return "invalid_request"
+    if status == 404:
+        return "not_found"
+    if status == 413:
+        return "request_too_large"
+    if any(keyword in haystack for keyword in _PERMISSION_KEYWORDS):
+        return "permission_denied"
     return "generic_failure"
 
 
 def normalized_http_status(info: Mapping[str, Any]) -> int:
     category = classify_error(info)
-    if category == "insufficient_balance":
+    raw_status = info.get("raw_status")
+    status = int(raw_status) if isinstance(raw_status, int) else None
+    if category in ("insufficient_balance", "rate_limited"):
         return 429
     if category == "account_invalid":
         return 401
+    if category == "permission_denied":
+        return 403
+    if category == "invalid_request":
+        return 400
+    if category == "not_found":
+        return 404
+    if category == "request_too_large":
+        return 413
+    if status is not None and 500 <= status <= 599:
+        return status
     return 502
 
 
 def normalized_error_type(info: Mapping[str, Any]) -> str:
     category = classify_error(info)
-    if category == "insufficient_balance":
-        return "insufficient_balance_error"
+    if category in ("insufficient_balance", "rate_limited"):
+        return "rate_limit_error"
     if category == "account_invalid":
         return "authentication_error"
-    return "upstream_error"
+    if category == "permission_denied":
+        return "permission_error"
+    if category in ("invalid_request", "not_found", "request_too_large"):
+        return "invalid_request_error"
+    return "server_error"
 
 
-def normalized_error_code(info: Mapping[str, Any]) -> str:
-    return classify_error(info)
+def normalized_error_code(info: Mapping[str, Any]) -> str | None:
+    raw_code = _compact_string(info.get("raw_code"))
+    if raw_code:
+        return raw_code
+    category = classify_error(info)
+    if category == "insufficient_balance":
+        return "insufficient_quota"
+    if category == "rate_limited":
+        return "rate_limit_exceeded"
+    if category == "account_invalid":
+        return "invalid_api_key"
+    return None
 
 
 def normalized_error_message(info: Mapping[str, Any]) -> str:
     raw_message = _compact_string(info.get("raw_message"))
-    if raw_message:
-        return raw_message
     category = classify_error(info)
+    expose_internal = (os.getenv("CHATMOCK_EXPOSE_INTERNAL_ERROR_DETAILS") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if raw_message:
+        if expose_internal:
+            return raw_message
+        lowered = raw_message.lower()
+        if category == "generic_failure" and any(
+            marker in lowered
+            for marker in (
+                "codex app-server",
+                "chatmock",
+                "candidate",
+                "tool_retry",
+                "request_start",
+                "retry_exhausted",
+                "no candidate succeeded",
+            )
+        ):
+            return "The server had an error while processing your request."
+        return raw_message
     if category == "insufficient_balance":
         return "Insufficient balance or quota"
+    if category == "rate_limited":
+        return "Rate limit exceeded"
     if category == "account_invalid":
         return "Account credentials are invalid"
+    if category == "permission_denied":
+        return "Permission denied"
+    if category == "invalid_request":
+        return "Invalid request"
+    if category == "not_found":
+        return "Resource not found"
+    if category == "request_too_large":
+        return "Request body too large"
     return "Upstream error"
 
 
 def normalized_error_payload(info: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "type": normalized_error_type(info),
-        "code": normalized_error_code(info),
+    payload = {
         "message": normalized_error_message(info),
-        "raw_status": info.get("raw_status"),
-        "raw_code": info.get("raw_code"),
-        "raw_message": info.get("raw_message"),
-        "raw_body": _jsonable(info.get("raw_body")),
-        "source": info.get("source"),
-        "phase": info.get("phase"),
+        "type": normalized_error_type(info),
+        "param": None,
+        "code": normalized_error_code(info),
     }
+    expose_internal = (os.getenv("CHATMOCK_EXPOSE_INTERNAL_ERROR_DETAILS") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if expose_internal:
+        payload.update(
+            {
+                "raw_status": info.get("raw_status"),
+                "raw_code": info.get("raw_code"),
+                "raw_message": info.get("raw_message"),
+                "raw_body": _jsonable(info.get("raw_body")),
+                "source": info.get("source"),
+                "phase": info.get("phase"),
+            }
+        )
+    return payload
 
 
 def should_retry_next_candidate(info: Mapping[str, Any]) -> bool:

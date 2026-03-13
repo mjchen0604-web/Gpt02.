@@ -17,16 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  Button,
   Card,
-  Typography,
+  Dropdown,
   Tabs,
   TabPane,
-  Button,
-  Dropdown,
+  Typography,
 } from '@douyinfe/semi-ui';
-import { Code, Zap, Clock, X, Eye, Send } from 'lucide-react';
+import { Clock, Code, Eye, Send, X, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import CodeViewer from './CodeViewer';
 import SSEViewer from './SSEViewer';
@@ -40,7 +40,6 @@ const DebugPanel = ({
   customRequestMode,
 }) => {
   const { t } = useTranslation();
-
   const [activeKey, setActiveKey] = useState(activeDebugTab);
 
   useEffect(() => {
@@ -52,7 +51,7 @@ const DebugPanel = ({
     onActiveDebugTabChange(key);
   };
 
-  const renderArrow = (items, pos, handleArrowClick, defaultNode) => {
+  const renderArrow = (items, pos, handleArrowClick) => {
     const style = {
       width: 32,
       height: 32,
@@ -70,28 +69,20 @@ const DebugPanel = ({
       <Dropdown
         render={
           <Dropdown.Menu>
-            {items.map((item) => {
-              return (
-                <Dropdown.Item
-                  key={item.itemKey}
-                  onClick={() => handleTabChange(item.itemKey)}
-                >
-                  {item.tab}
-                </Dropdown.Item>
-              );
-            })}
+            {items.map((item) => (
+              <Dropdown.Item
+                key={item.itemKey}
+                onClick={() => handleTabChange(item.itemKey)}
+              >
+                {item.tab}
+              </Dropdown.Item>
+            ))}
           </Dropdown.Menu>
         }
       >
-        {pos === 'start' ? (
-          <div style={style} onClick={handleArrowClick}>
-            ←
-          </div>
-        ) : (
-          <div style={style} onClick={handleArrowClick}>
-            →
-          </div>
-        )}
+        <div style={style} onClick={handleArrowClick}>
+          {pos === 'start' ? '←' : '→'}
+        </div>
       </Dropdown>
     );
   };
@@ -146,7 +137,7 @@ const DebugPanel = ({
                 {t('预览请求体')}
                 {customRequestMode && (
                   <span className='px-1.5 py-0.5 text-xs bg-orange-100 text-orange-600 rounded-full'>
-                    自定义
+                    {t('自定义')}
                   </span>
                 )}
               </div>
@@ -172,6 +163,22 @@ const DebugPanel = ({
             <CodeViewer
               content={debugData.request}
               title='request'
+              language='json'
+            />
+          </TabPane>
+
+          <TabPane
+            tab={
+              <div className='flex items-center gap-2'>
+                <Zap size={16} />
+                {t('真实 API 默认注入')}
+              </div>
+            }
+            itemKey='defaults'
+          >
+            <CodeViewer
+              content={debugData.runtimeDefaultsPreview}
+              title='runtime-defaults'
               language='json'
             />
           </TabPane>

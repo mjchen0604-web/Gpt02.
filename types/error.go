@@ -204,8 +204,9 @@ func (e *NewAPIError) ToOpenAIError() OpenAIError {
 	if e.errorCode != ErrorCodeCountTokenFailed {
 		result.Message = common.MaskSensitiveInfo(result.Message)
 	}
+	result.Type = normalizeOpenAIErrorType(e.StatusCode, result.Type)
 	if result.Message == "" {
-		result.Message = string(e.errorType)
+		result.Message = result.Type
 	}
 	return result
 }
@@ -408,4 +409,28 @@ func IsRecordErrorLog(e *NewAPIError) bool {
 		return true
 	}
 	return *e.recordErrorLog
+}
+
+func normalizeOpenAIErrorType(statusCode int, currentType string) string {
+	switch currentType {
+	case "invalid_request_error", "authentication_error", "permission_error", "rate_limit_error", "server_error":
+		return currentType
+	}
+	switch {
+	case statusCode == http.StatusUnauthorized:
+		return "authentication_error"
+	case statusCode == http.StatusForbidden:
+		return "permission_error"
+	case statusCode == http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case statusCode == http.StatusBadRequest || statusCode == http.StatusNotFound || statusCode == http.StatusRequestEntityTooLarge || statusCode == http.StatusUnprocessableEntity:
+		return "invalid_request_error"
+	case statusCode >= 500:
+		return "server_error"
+	default:
+		if currentType == "" || currentType == string(ErrorTypeNewAPIError) || currentType == string(ErrorTypeUpstreamError) {
+			return "server_error"
+		}
+		return currentType
+	}
 }

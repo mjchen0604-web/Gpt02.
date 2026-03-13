@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Card, Chat, Typography, Button } from '@douyinfe/semi-ui';
-import { MessageSquare, Eye, EyeOff } from 'lucide-react';
+import { Button, Card, Chat, Typography } from '@douyinfe/semi-ui';
+import { Eye, EyeOff, MessageSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import CustomInputRender from './CustomInputRender';
 
@@ -28,8 +28,9 @@ const ChatArea = ({
   message,
   inputs,
   styleState,
-  showDebugPanel,
   roleInfo,
+  showDebugPanel,
+  canUseDebugPanel,
   onMessageSend,
   onMessageCopy,
   onMessageReset,
@@ -78,16 +79,18 @@ const ChatArea = ({
               </div>
             </div>
             <div className='flex items-center gap-2'>
-              <Button
-                icon={showDebugPanel ? <EyeOff size={14} /> : <Eye size={14} />}
-                onClick={onToggleDebugPanel}
-                theme='borderless'
-                type='primary'
-                size='small'
-                className='!rounded-lg !text-white/80 hover:!text-white hover:!bg-white/10'
-              >
-                {showDebugPanel ? t('隐藏调试') : t('显示调试')}
-              </Button>
+              {canUseDebugPanel && (
+                <Button
+                  theme='borderless'
+                  type='tertiary'
+                  size='small'
+                  icon={showDebugPanel ? <EyeOff size={14} /> : <Eye size={14} />}
+                  onClick={onToggleDebugPanel}
+                  className='!text-white/90 hover:!text-white hover:!bg-white/10 !rounded-lg'
+                >
+                  {showDebugPanel ? t('隐藏调试') : t('显示调试')}
+                </Button>
+              )}
             </div>
           </div>
         </div>

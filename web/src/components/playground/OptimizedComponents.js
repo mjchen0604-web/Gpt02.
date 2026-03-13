@@ -66,32 +66,34 @@ export const OptimizedSettingsPanel = React.memo(
       JSON.stringify(prevProps.inputs) === JSON.stringify(nextProps.inputs) &&
       JSON.stringify(prevProps.parameterEnabled) ===
         JSON.stringify(nextProps.parameterEnabled) &&
+      prevProps.systemPrompt === nextProps.systemPrompt &&
       JSON.stringify(prevProps.models) === JSON.stringify(nextProps.models) &&
       JSON.stringify(prevProps.groups) === JSON.stringify(nextProps.groups) &&
+      prevProps.canUseCustomRequest === nextProps.canUseCustomRequest &&
       prevProps.customRequestMode === nextProps.customRequestMode &&
       prevProps.customRequestBody === nextProps.customRequestBody &&
-      prevProps.showDebugPanel === nextProps.showDebugPanel &&
-      prevProps.showSettings === nextProps.showSettings &&
       JSON.stringify(prevProps.previewPayload) ===
         JSON.stringify(nextProps.previewPayload) &&
+      JSON.stringify(prevProps.adminControls) ===
+        JSON.stringify(nextProps.adminControls) &&
+      prevProps.applyToRealAPI === nextProps.applyToRealAPI &&
+      prevProps.onApplyToRealAPIChange === nextProps.onApplyToRealAPIChange &&
+      prevProps.onSavePersonalDefaults === nextProps.onSavePersonalDefaults &&
+      prevProps.effectHint === nextProps.effectHint &&
+      prevProps.showSettings === nextProps.showSettings &&
       JSON.stringify(prevProps.messages) === JSON.stringify(nextProps.messages)
     );
   },
 );
 
-// 优化的调试面板组件
 export const OptimizedDebugPanel = React.memo(
   DebugPanel,
   (prevProps, nextProps) => {
     return (
-      prevProps.show === nextProps.show &&
-      prevProps.activeTab === nextProps.activeTab &&
-      JSON.stringify(prevProps.debugData) ===
-        JSON.stringify(nextProps.debugData) &&
-      JSON.stringify(prevProps.previewPayload) ===
-        JSON.stringify(nextProps.previewPayload) &&
+      JSON.stringify(prevProps.debugData) === JSON.stringify(nextProps.debugData) &&
+      prevProps.activeDebugTab === nextProps.activeDebugTab &&
       prevProps.customRequestMode === nextProps.customRequestMode &&
-      prevProps.showDebugPanel === nextProps.showDebugPanel
+      prevProps.styleState.isMobile === nextProps.styleState.isMobile
     );
   },
 );

@@ -174,6 +174,19 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.POST("/migrate_console_setting", controller.MigrateConsoleSetting) // 用于迁移检测的旧键，下个版本会删除
 		}
 
+		playgroundRoute := apiRouter.Group("/playground")
+		playgroundRoute.Use(middleware.UserAuth())
+		{
+			playgroundRoute.GET("/config", controller.GetPlaygroundConfig)
+			playgroundRoute.POST("/config/defaults", controller.SavePlaygroundDefaults)
+			playgroundRoute.POST("/config/apply", controller.SavePlaygroundApplyToRealAPI)
+		}
+		playgroundAdminRoute := apiRouter.Group("/playground")
+		playgroundAdminRoute.Use(middleware.AdminAuth())
+		{
+			playgroundAdminRoute.POST("/config/visibility", controller.SavePlaygroundVisibility)
+		}
+
 		// Custom OAuth provider management (root only)
 		customOAuthRoute := apiRouter.Group("/custom-oauth-provider")
 		customOAuthRoute.Use(middleware.RootAuth())

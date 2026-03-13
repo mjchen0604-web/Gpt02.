@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, current_app, jsonify, make_response, request, send_from_directory
 
+from .codex_app_server import read_codex_app_server_config
 from .utils import (
     get_chatgpt_auth_records,
     get_max_retry_interval_seconds,
@@ -40,7 +41,6 @@ def _model_ids(expose_variants: bool) -> List[str]:
         ("gpt-5.1-codex", ["high", "medium", "low"]),
         ("gpt-5.1-codex-max", ["xhigh", "high", "medium", "low"]),
         ("gpt-5.1-codex-mini", []),
-        ("codex-mini", []),
     ]
     out: List[str] = []
     for base, efforts in model_groups:
@@ -266,6 +266,9 @@ def _current_settings_snapshot(app=None) -> Dict[str, Any]:
         "httpsProxy": os.getenv("HTTPS_PROXY", ""),
         "allProxy": os.getenv("ALL_PROXY", ""),
         "noProxy": os.getenv("NO_PROXY", ""),
+        "chatgptAuthAccessToken": os.getenv("CHATMOCK_CODEX_ACCESS_TOKEN", ""),
+        "chatgptAuthAccountId": os.getenv("CHATMOCK_CODEX_ACCOUNT_ID", ""),
+        "chatgptAuthPlanType": os.getenv("CHATMOCK_CODEX_PLAN_TYPE", ""),
         "uploadReplaceDefault": _bool_value(stored.get("uploadReplaceDefault"), default=False),
         "authFiles": auth_files,
     }
@@ -327,6 +330,15 @@ def _merge_payload_settings(payload: Dict[str, Any], current: Dict[str, Any]) ->
         "httpsProxy": _clean_string(incoming.get("httpsProxy", current["httpsProxy"])),
         "allProxy": _clean_string(incoming.get("allProxy", current["allProxy"])),
         "noProxy": _clean_string(incoming.get("noProxy", current["noProxy"])),
+        "chatgptAuthAccessToken": _clean_string(
+            incoming.get("chatgptAuthAccessToken", current["chatgptAuthAccessToken"])
+        ),
+        "chatgptAuthAccountId": _clean_string(
+            incoming.get("chatgptAuthAccountId", current["chatgptAuthAccountId"])
+        ),
+        "chatgptAuthPlanType": _clean_string(
+            incoming.get("chatgptAuthPlanType", current["chatgptAuthPlanType"])
+        ),
         "uploadReplaceDefault": _bool_value(
             incoming.get("uploadReplaceDefault", current["uploadReplaceDefault"]),
             default=current["uploadReplaceDefault"],
@@ -358,6 +370,9 @@ def _apply_settings(settings: Dict[str, Any], *, app=None, persist: bool) -> Dic
     _set_env_or_clear("HTTPS_PROXY", merged["httpsProxy"])
     _set_env_or_clear("ALL_PROXY", merged["allProxy"])
     _set_env_or_clear("NO_PROXY", merged["noProxy"])
+    _set_env_or_clear("CHATMOCK_CODEX_ACCESS_TOKEN", merged["chatgptAuthAccessToken"])
+    _set_env_or_clear("CHATMOCK_CODEX_ACCOUNT_ID", merged["chatgptAuthAccountId"])
+    _set_env_or_clear("CHATMOCK_CODEX_PLAN_TYPE", merged["chatgptAuthPlanType"])
 
     if runtime_app is not None:
         runtime_app.config["REASONING_EFFORT"] = merged["reasoningEffort"]
@@ -465,6 +480,36 @@ def _service_status() -> Dict[str, Any]:
     return {"status": "unmanaged", "managed": False, "listening": False}
 
 
+def _runtime_config_snapshot() -> Dict[str, Any]:
+    manager = _runtime_codex_manager()
+    candidate_url = ""
+    if manager is not None and hasattr(manager, "get_request_candidates"):
+        try:
+            candidates = list(manager.get_request_candidates() or [])
+            if candidates:
+                candidate_url = str(candidates[0].get("url") or "").strip()
+        except Exception:
+            candidate_url = ""
+    if not candidate_url:
+        service = _service_status()
+        instances = service.get("instances") if isinstance(service.get("instances"), list) else []
+        for item in instances:
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") in ("running", "external"):
+                candidate_url = str(item.get("url") or "").strip()
+                if candidate_url:
+                    break
+        if not candidate_url:
+            candidate_url = str(service.get("url") or "").strip()
+    if not candidate_url:
+        return {}
+    try:
+        return read_codex_app_server_config(app_server_url=candidate_url, cwd=str(Path.cwd()))
+    except Exception as exc:
+        return {"error": str(exc), "url": candidate_url}
+
+
 def _fast_instance_map() -> Dict[str, Dict[str, Any]]:
     service = _service_status()
     instances = service.get("instances") if isinstance(service.get("instances"), list) else []
@@ -545,6 +590,7 @@ def dashboard_models():
 def dashboard_config():
     settings = _current_settings_snapshot()
     service = _service_status()
+    runtime_config = _runtime_config_snapshot()
     local = {
         "CHATGPT_LOCAL_HOME": os.getenv("CHATGPT_LOCAL_HOME", ""),
         "CHATGPT_LOCAL_AUTH_FILES": os.getenv("CHATGPT_LOCAL_AUTH_FILES", ""),
@@ -562,6 +608,9 @@ def dashboard_config():
         "HTTPS_PROXY": settings["httpsProxy"],
         "ALL_PROXY": settings["allProxy"],
         "NO_PROXY": settings["noProxy"],
+        "CHATMOCK_CODEX_ACCESS_TOKEN": settings["chatgptAuthAccessToken"],
+        "CHATMOCK_CODEX_ACCOUNT_ID": settings["chatgptAuthAccountId"],
+        "CHATMOCK_CODEX_PLAN_TYPE": settings["chatgptAuthPlanType"],
         "CHATMOCK_DASHBOARD_SETTINGS_PATH": str(_settings_path()),
         "CHATMOCK_DATA_DIR": os.getenv("CHATMOCK_DATA_DIR", ""),
         "CHATMOCK_MANAGE_CODEX_APP_SERVER": os.getenv("CHATMOCK_MANAGE_CODEX_APP_SERVER", ""),
@@ -569,6 +618,7 @@ def dashboard_config():
         "CHATGPT_LOCAL_CODEX_APP_SERVER_URL": os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL", ""),
         "CODEX_HOME": os.getenv("CODEX_HOME", ""),
         "service": service,
+        "configRead": runtime_config,
     }
     return jsonify(
         {
@@ -633,7 +683,7 @@ def dashboard_action_service():
         return make_response(jsonify({"error": "action must be one of start|stop|restart"}), 400)
     manager = _runtime_codex_manager()
     if manager is None:
-        return make_response(jsonify({"ok": False, "error": "codex app-server manager is unavailable"}), 400)
+        return make_response(jsonify({"ok": False, "error": "runtime manager is unavailable"}), 400)
 
     try:
         result = getattr(manager, action)()
@@ -642,7 +692,7 @@ def dashboard_action_service():
             {
                 "ok": bool(result.get("ok")),
                 "action": action,
-                "manager": "codex-app-server",
+                "manager": "runtime",
                 "stdout": result.get("message", ""),
                 "stderr": result.get("error", ""),
                 "status": result.get("status"),

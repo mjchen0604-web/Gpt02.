@@ -20,9 +20,36 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   STORAGE_KEYS,
   DEFAULT_CONFIG,
+  PLAYGROUND_USER_INPUT_KEYS,
+  PLAYGROUND_USER_PARAMETER_KEYS,
 } from '../../constants/playground.constants';
 
 const MESSAGES_STORAGE_KEY = 'playground_messages';
+
+const pick = (source, keys) => {
+  const out = {};
+  keys.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(source || {}, key)) {
+      out[key] = source[key];
+    }
+  });
+  return out;
+};
+
+const normalizeUserScopedConfig = (config = {}) => {
+  const inputs = {
+    ...pick(DEFAULT_CONFIG.inputs, PLAYGROUND_USER_INPUT_KEYS),
+    ...pick(config.inputs || {}, PLAYGROUND_USER_INPUT_KEYS),
+  };
+  const parameterEnabled = {
+    ...pick(DEFAULT_CONFIG.parameterEnabled, PLAYGROUND_USER_PARAMETER_KEYS),
+    ...pick(config.parameterEnabled || {}, PLAYGROUND_USER_PARAMETER_KEYS),
+  };
+  return {
+    inputs,
+    parameterEnabled,
+  };
+};
 
 /**
  * 保存配置到 localStorage
@@ -30,8 +57,9 @@ const MESSAGES_STORAGE_KEY = 'playground_messages';
  */
 export const saveConfig = (config) => {
   try {
+    const normalized = normalizeUserScopedConfig(config);
     const configToSave = {
-      ...config,
+      ...normalized,
       timestamp: new Date().toISOString(),
     };
     localStorage.setItem(STORAGE_KEYS.CONFIG, JSON.stringify(configToSave));
@@ -65,22 +93,18 @@ export const loadConfig = () => {
     const savedConfig = localStorage.getItem(STORAGE_KEYS.CONFIG);
     if (savedConfig) {
       const parsedConfig = JSON.parse(savedConfig);
+      const normalized = normalizeUserScopedConfig(parsedConfig);
 
       const mergedConfig = {
         inputs: {
           ...DEFAULT_CONFIG.inputs,
-          ...parsedConfig.inputs,
+          ...normalized.inputs,
         },
         parameterEnabled: {
           ...DEFAULT_CONFIG.parameterEnabled,
-          ...parsedConfig.parameterEnabled,
+          ...normalized.parameterEnabled,
         },
-        showDebugPanel:
-          parsedConfig.showDebugPanel || DEFAULT_CONFIG.showDebugPanel,
-        customRequestMode:
-          parsedConfig.customRequestMode || DEFAULT_CONFIG.customRequestMode,
-        customRequestBody:
-          parsedConfig.customRequestBody || DEFAULT_CONFIG.customRequestBody,
+        systemPrompt: DEFAULT_CONFIG.systemPrompt,
       };
 
       return mergedConfig;
@@ -90,6 +114,21 @@ export const loadConfig = () => {
   }
 
   return DEFAULT_CONFIG;
+};
+
+export const loadRawConfig = () => {
+  try {
+    const savedConfig = localStorage.getItem(STORAGE_KEYS.CONFIG);
+    if (savedConfig) {
+      const parsedConfig = JSON.parse(savedConfig);
+      if (parsedConfig && typeof parsedConfig === 'object') {
+        return normalizeUserScopedConfig(parsedConfig);
+      }
+    }
+  } catch (error) {
+    console.error('加载原始配置失败:', error);
+  }
+  return null;
 };
 
 /**

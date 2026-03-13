@@ -18,42 +18,68 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Card, Select, Typography, Button, Switch } from '@douyinfe/semi-ui';
-import { Sparkles, Users, ToggleLeft, X, Settings } from 'lucide-react';
+import {
+  Button,
+  Card,
+  Select,
+  Switch,
+  TextArea,
+  Typography,
+} from '@douyinfe/semi-ui';
+import {
+  Bug,
+  Code,
+  FileText,
+  Settings,
+  Sparkles,
+  ToggleLeft,
+  Users,
+  X,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { renderGroupOption, selectFilter } from '../../helpers';
-import ParameterControl from './ParameterControl';
-import ImageUrlInput from './ImageUrlInput';
 import ConfigManager from './ConfigManager';
 import CustomRequestEditor from './CustomRequestEditor';
+import ImageUrlInput from './ImageUrlInput';
+import ParameterControl from './ParameterControl';
+
+const VISIBILITY_OPTIONS = [
+  { label: '关闭', value: 'off' },
+  { label: '仅管理员', value: 'admin' },
+  { label: '全局开放', value: 'global' },
+];
 
 const SettingsPanel = ({
   inputs,
   parameterEnabled,
+  systemPrompt,
   models,
   groups,
   styleState,
-  showDebugPanel,
-  customRequestMode,
-  customRequestBody,
   onInputChange,
   onParameterToggle,
   onCloseSettings,
   onConfigImport,
   onConfigReset,
+  adminControls,
+  messages,
+  canUseCustomRequest,
+  customRequestMode,
+  customRequestBody,
   onCustomRequestModeChange,
   onCustomRequestBodyChange,
   previewPayload,
-  messages,
+  effectHint,
+  applyToRealAPI,
+  onApplyToRealAPIChange,
+  onSavePersonalDefaults,
 }) => {
   const { t } = useTranslation();
 
   const currentConfig = {
     inputs,
     parameterEnabled,
-    showDebugPanel,
-    customRequestMode,
-    customRequestBody,
+    systemPrompt,
   };
 
   return (
@@ -67,7 +93,6 @@ const SettingsPanel = ({
         flexDirection: 'column',
       }}
     >
-      {/* 标题区域 - 与调试面板保持一致 */}
       <div className='flex items-center justify-between mb-6 flex-shrink-0'>
         <div className='flex items-center'>
           <div className='w-10 h-10 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center mr-3'>
@@ -90,7 +115,6 @@ const SettingsPanel = ({
         )}
       </div>
 
-      {/* 移动端配置管理 */}
       {styleState.isMobile && (
         <div className='mb-4 flex-shrink-0'>
           <ConfigManager
@@ -98,33 +122,20 @@ const SettingsPanel = ({
             onConfigImport={onConfigImport}
             onConfigReset={onConfigReset}
             styleState={{ ...styleState, isMobile: false }}
+            adminControls={adminControls}
             messages={messages}
+            onSavePersonalDefaults={onSavePersonalDefaults}
           />
         </div>
       )}
 
       <div className='space-y-6 overflow-y-auto flex-1 pr-2 model-settings-scroll'>
-        {/* 自定义请求体编辑器 */}
-        <CustomRequestEditor
-          customRequestMode={customRequestMode}
-          customRequestBody={customRequestBody}
-          onCustomRequestModeChange={onCustomRequestModeChange}
-          onCustomRequestBodyChange={onCustomRequestBodyChange}
-          defaultPayload={previewPayload}
-        />
-
-        {/* 分组选择 */}
-        <div className={customRequestMode ? 'opacity-50' : ''}>
+        <div>
           <div className='flex items-center gap-2 mb-2'>
             <Users size={16} className='text-gray-500' />
             <Typography.Text strong className='text-sm'>
               {t('分组')}
             </Typography.Text>
-            {customRequestMode && (
-              <Typography.Text className='text-xs text-orange-600'>
-                ({t('已在自定义模式中忽略')})
-              </Typography.Text>
-            )}
           </div>
           <Select
             placeholder={t('请选择分组')}
@@ -141,22 +152,15 @@ const SettingsPanel = ({
             style={{ width: '100%' }}
             dropdownStyle={{ width: '100%', maxWidth: '100%' }}
             className='!rounded-lg'
-            disabled={customRequestMode}
           />
         </div>
 
-        {/* 模型选择 */}
-        <div className={customRequestMode ? 'opacity-50' : ''}>
+        <div>
           <div className='flex items-center gap-2 mb-2'>
             <Sparkles size={16} className='text-gray-500' />
             <Typography.Text strong className='text-sm'>
               {t('模型')}
             </Typography.Text>
-            {customRequestMode && (
-              <Typography.Text className='text-xs text-orange-600'>
-                ({t('已在自定义模式中忽略')})
-              </Typography.Text>
-            )}
           </div>
           <Select
             placeholder={t('请选择模型')}
@@ -172,47 +176,120 @@ const SettingsPanel = ({
             style={{ width: '100%' }}
             dropdownStyle={{ width: '100%', maxWidth: '100%' }}
             className='!rounded-lg'
-            disabled={customRequestMode}
           />
+          {effectHint && (
+            <Typography.Text className='text-xs text-gray-500 mt-2 block'>
+              {effectHint}
+            </Typography.Text>
+          )}
         </div>
 
-        {/* 图片URL输入 */}
-        <div className={customRequestMode ? 'opacity-50' : ''}>
+        <div>
+          <div className='flex items-center justify-between gap-3'>
+            <div>
+              <Typography.Text strong className='text-sm'>
+                {t('作用到真实 API')}
+              </Typography.Text>
+              <Typography.Text className='text-xs text-gray-500 block mt-1'>
+                {t('开启后，未显式传参的真实 API 请求也会继承这 6 个默认参数。')}
+              </Typography.Text>
+            </div>
+            <Switch
+              checked={applyToRealAPI}
+              onChange={onApplyToRealAPIChange}
+              checkedText={t('开')}
+              uncheckedText={t('关')}
+              size='small'
+            />
+          </div>
+        </div>
+
+        <div>
           <ImageUrlInput
             imageUrls={inputs.imageUrls}
             imageEnabled={inputs.imageEnabled}
             onImageUrlsChange={(urls) => onInputChange('imageUrls', urls)}
-            onImageEnabledChange={(enabled) =>
-              onInputChange('imageEnabled', enabled)
-            }
-            disabled={customRequestMode}
+            onImageEnabledChange={(enabled) => onInputChange('imageEnabled', enabled)}
           />
         </div>
 
-        {/* 参数控制组件 */}
-        <div className={customRequestMode ? 'opacity-50' : ''}>
+        <div>
           <ParameterControl
             inputs={inputs}
             parameterEnabled={parameterEnabled}
             onInputChange={onInputChange}
             onParameterToggle={onParameterToggle}
-            disabled={customRequestMode}
           />
         </div>
 
-        {/* 流式输出开关 */}
-        <div className={customRequestMode ? 'opacity-50' : ''}>
+        <div>
+          <div className='flex items-center gap-2 mb-2'>
+            <FileText size={16} className='text-gray-500' />
+            <Typography.Text strong className='text-sm'>
+              {t('System Prompt')}
+            </Typography.Text>
+          </div>
+          <TextArea
+            value={systemPrompt}
+            onChange={(value) => onInputChange('systemPrompt', value)}
+            autosize={{ minRows: 4, maxRows: 10 }}
+            placeholder={t('输入系统提示词')}
+            className='!rounded-lg'
+          />
+        </div>
+
+        {adminControls?.enabled && (
+          <div className='space-y-4 rounded-xl border border-[var(--semi-color-border)] p-3'>
+            <div className='flex items-center gap-2'>
+              <Bug size={16} className='text-gray-500' />
+              <Typography.Text strong className='text-sm'>
+                {t('实验功能可见性')}
+              </Typography.Text>
+            </div>
+            <div>
+              <Typography.Text className='text-xs text-gray-500 mb-2 block'>
+                {t('调试信息')}
+              </Typography.Text>
+              <Select
+                value={adminControls.debugVisibility}
+                optionList={VISIBILITY_OPTIONS}
+                onChange={(value) => adminControls.onSaveVisibility?.('debug', value)}
+                className='!rounded-lg'
+              />
+            </div>
+            <div>
+              <Typography.Text className='text-xs text-gray-500 mb-2 block'>
+                {t('自定义请求体模式')}
+              </Typography.Text>
+              <Select
+                value={adminControls.customRequestVisibility}
+                optionList={VISIBILITY_OPTIONS}
+                onChange={(value) =>
+                  adminControls.onSaveVisibility?.('custom_request', value)
+                }
+                className='!rounded-lg'
+              />
+            </div>
+          </div>
+        )}
+
+        {canUseCustomRequest && (
+          <CustomRequestEditor
+            customRequestMode={customRequestMode}
+            customRequestBody={customRequestBody}
+            onCustomRequestModeChange={onCustomRequestModeChange}
+            onCustomRequestBodyChange={onCustomRequestBodyChange}
+            defaultPayload={previewPayload}
+          />
+        )}
+
+        <div>
           <div className='flex items-center justify-between'>
             <div className='flex items-center gap-2'>
               <ToggleLeft size={16} className='text-gray-500' />
               <Typography.Text strong className='text-sm'>
                 {t('流式输出')}
               </Typography.Text>
-              {customRequestMode && (
-                <Typography.Text className='text-xs text-orange-600'>
-                  ({t('已在自定义模式中忽略')})
-                </Typography.Text>
-              )}
             </div>
             <Switch
               checked={inputs.stream}
@@ -220,13 +297,11 @@ const SettingsPanel = ({
               checkedText={t('开')}
               uncheckedText={t('关')}
               size='small'
-              disabled={customRequestMode}
             />
           </div>
         </div>
       </div>
 
-      {/* 桌面端的配置管理放在底部 */}
       {!styleState.isMobile && (
         <div className='flex-shrink-0 pt-3'>
           <ConfigManager
@@ -234,7 +309,9 @@ const SettingsPanel = ({
             onConfigImport={onConfigImport}
             onConfigReset={onConfigReset}
             styleState={styleState}
+            adminControls={adminControls}
             messages={messages}
+            onSavePersonalDefaults={onSavePersonalDefaults}
           />
         </div>
       )}

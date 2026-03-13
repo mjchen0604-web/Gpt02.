@@ -33,6 +33,9 @@ const nodes = {
   setHttpsProxy: $("set-https-proxy"),
   setAllProxy: $("set-all-proxy"),
   setNoProxy: $("set-no-proxy"),
+  setChatgptAuthAccessToken: $("set-chatgpt-auth-access-token"),
+  setChatgptAuthAccountId: $("set-chatgpt-auth-account-id"),
+  setChatgptAuthPlanType: $("set-chatgpt-auth-plan-type"),
 };
 
 let settingsLoaded = false;
@@ -222,6 +225,9 @@ function readSettingsForm() {
     httpsProxy: nodes.setHttpsProxy?.value || "",
     allProxy: nodes.setAllProxy?.value || "",
     noProxy: nodes.setNoProxy?.value || "",
+    chatgptAuthAccessToken: nodes.setChatgptAuthAccessToken?.value || "",
+    chatgptAuthAccountId: nodes.setChatgptAuthAccountId?.value || "",
+    chatgptAuthPlanType: nodes.setChatgptAuthPlanType?.value || "",
     uploadReplaceDefault: Boolean(nodes.authReplace?.checked),
   };
 }
@@ -268,6 +274,15 @@ function applySettingsForm(settings = {}) {
   }
   if (nodes.setNoProxy) {
     nodes.setNoProxy.value = settings.noProxy || "";
+  }
+  if (nodes.setChatgptAuthAccessToken) {
+    nodes.setChatgptAuthAccessToken.value = settings.chatgptAuthAccessToken || "";
+  }
+  if (nodes.setChatgptAuthAccountId) {
+    nodes.setChatgptAuthAccountId.value = settings.chatgptAuthAccountId || "";
+  }
+  if (nodes.setChatgptAuthPlanType) {
+    nodes.setChatgptAuthPlanType.value = settings.chatgptAuthPlanType || "";
   }
   if (nodes.authReplace) {
     nodes.authReplace.checked = Boolean(settings.uploadReplaceDefault);
@@ -339,6 +354,9 @@ function bindSettingsAutosave() {
     nodes.setHttpsProxy,
     nodes.setAllProxy,
     nodes.setNoProxy,
+    nodes.setChatgptAuthAccessToken,
+    nodes.setChatgptAuthAccountId,
+    nodes.setChatgptAuthPlanType,
     nodes.authReplace,
   ].filter(Boolean);
 
@@ -514,6 +532,5 @@ async function init() {
 }
 
 init();
-
 
 

@@ -356,11 +356,10 @@ def main() -> None:
     )
     p_serve.add_argument(
         "--upstream",
-        choices=["chatgpt-backend", "codex-app-server"],
+        choices=["codex-app-server"],
         default=(os.getenv("CHATGPT_LOCAL_UPSTREAM") or UPSTREAM_MODE_DEFAULT).strip().lower(),
         help=(
             "Select the upstream provider. "
-            "'chatgpt-backend' uses chatgpt.com/backend-api/codex/responses. "
             "'codex-app-server' uses a local Codex app-server WebSocket."
         ),
     )
@@ -376,7 +375,7 @@ def main() -> None:
         default=(os.getenv("CHATGPT_LOCAL_SERVICE_TIER") or "").strip() or None,
         help=(
             "Optional service tier override. "
-            "Use 'fast' or 'flex' with codex-app-server, or 'priority' with chatgpt-backend. "
+            "Use 'fast' or 'flex' with codex-app-server. "
             "Omit to leave unset."
         ),
     )

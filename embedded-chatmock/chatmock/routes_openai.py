@@ -26,11 +26,11 @@ from .upstream_errors import (
     should_retry_next_candidate,
 )
 from .upstream import normalize_model_name, start_upstream_request
+from .thread_sessions import build_thread_session_state
 from .utils import (
     RetryableStreamError,
     convert_chat_messages_to_responses_input,
     convert_tools_chat_to_responses,
-    get_effective_chatgpt_auth_candidates,
     sse_translate_chat,
     sse_translate_text,
 )
@@ -78,14 +78,9 @@ def _instructions_for_model(model: str) -> str:
     return base
 
 
-def _upstream_attempt_limit(is_stream: bool, configured_upstream: str) -> int:
+def _upstream_attempt_limit(is_stream: bool) -> int:
     if is_stream:
         return 1
-    if configured_upstream == "chatgpt-backend":
-        try:
-            return max(1, len(get_effective_chatgpt_auth_candidates(ensure_fresh=True) or []))
-        except Exception:
-            return 1
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
     if manager is not None and hasattr(manager, "get_request_candidates"):
         try:
@@ -112,6 +107,45 @@ def _resolve_service_tier(payload: Dict[str, Any], requested_model: str | None =
             return None
         return normalized
     return None
+
+
+def _first_non_empty(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _resolve_thread_session(payload: Dict[str, Any], input_items: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    session_key = _first_non_empty(
+        payload.get("session_id"),
+        metadata.get("session_id"),
+        payload.get("conversation_id"),
+        metadata.get("conversation_id"),
+        request.headers.get("x-session-id"),
+        request.headers.get("session_id"),
+        request.headers.get("x-conversation-id"),
+        request.headers.get("conversation_id"),
+    )
+    explicit_thread_id = _first_non_empty(
+        payload.get("thread_id"),
+        metadata.get("thread_id"),
+        request.headers.get("x-thread-id"),
+        request.headers.get("thread_id"),
+    )
+    fork_from_thread_id = _first_non_empty(
+        payload.get("fork_from_thread_id"),
+        metadata.get("fork_from_thread_id"),
+        request.headers.get("x-fork-from-thread-id"),
+        request.headers.get("fork_from_thread_id"),
+    )
+    return build_thread_session_state(
+        session_key=session_key,
+        input_items=input_items,
+        explicit_thread_id=explicit_thread_id,
+        fork_from_thread_id=fork_from_thread_id,
+    )
 
 
 def _resolve_web_search_mode(
@@ -156,6 +190,8 @@ def _resolve_web_search_mode(
 def chat_completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
     verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
+    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
+    expose_thread_ids = bool(current_app.config.get("EXPOSE_THREAD_IDS"))
     reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
     reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
     reasoning_compat = current_app.config.get("REASONING_COMPAT", "think-tags")
@@ -260,6 +296,7 @@ def chat_completions() -> Response:
         input_items = [
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": payload.get("prompt")}]}
         ]
+    thread_session = _resolve_thread_session(payload, input_items)
 
     model_reasoning = extract_reasoning_from_model_name(requested_model)
     reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
@@ -272,8 +309,7 @@ def chat_completions() -> Response:
         allowed_efforts=allowed_efforts_for_model(model),
     )
 
-    configured_upstream = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
-    attempt_limit = _upstream_attempt_limit(is_stream, configured_upstream)
+    attempt_limit = _upstream_attempt_limit(is_stream)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     created = int(time.time())
@@ -288,6 +324,7 @@ def chat_completions() -> Response:
             reasoning_param=reasoning_param,
             service_tier=service_tier,
             web_search_mode=web_search_mode,
+            thread_session=thread_session,
         )
         if error_resp is not None:
             error_info = error_info_from_flask_response("chatcore", "request_start", error_resp)
@@ -316,6 +353,7 @@ def chat_completions() -> Response:
                     reasoning_param=reasoning_param,
                     service_tier=service_tier,
                     web_search_mode="disabled",
+                    thread_session=thread_session,
                 )
                 record_rate_limits_from_response(upstream2)
                 if err2 is None and upstream2 is not None and upstream2.status_code < 400:
@@ -384,6 +422,7 @@ def chat_completions() -> Response:
                         reasoning_param=reasoning_param,
                         service_tier=service_tier,
                         web_search_mode=web_search_mode,
+                        thread_session=thread_session,
                     )
                     if next_error is not None:
                         next_error_info = error_info_from_flask_response("chatcore", "request_start", next_error)
@@ -401,8 +440,11 @@ def chat_completions() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-        if service_tier:
+        if expose_service_tier and service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+        if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
+            resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
+            resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -531,15 +573,21 @@ def chat_completions() -> Response:
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
-    if observed_service_tier:
+    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
+        completion["thread_id"] = upstream.chatmock_thread_id
+        completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
+    if expose_service_tier and observed_service_tier:
         completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/chat/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
-    if service_tier:
+    if expose_service_tier and service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-    if observed_service_tier:
+    if expose_service_tier and observed_service_tier:
         resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
+        resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
+        resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -549,6 +597,8 @@ def chat_completions() -> Response:
 def completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
     verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
+    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
+    expose_thread_ids = bool(current_app.config.get("EXPOSE_THREAD_IDS"))
     debug_model = current_app.config.get("DEBUG_MODEL")
     reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
     reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
@@ -580,6 +630,7 @@ def completions() -> Response:
 
     messages = [{"role": "user", "content": prompt or ""}]
     input_items = convert_chat_messages_to_responses_input(messages)
+    thread_session = _resolve_thread_session(payload, input_items)
 
     model_reasoning = extract_reasoning_from_model_name(requested_model)
     reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
@@ -590,8 +641,7 @@ def completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
-    configured_upstream = str(current_app.config.get("UPSTREAM_MODE") or "chatgpt-backend").strip().lower()
-    attempt_limit = _upstream_attempt_limit(stream_req, configured_upstream)
+    attempt_limit = _upstream_attempt_limit(stream_req)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     created = int(time.time())
@@ -602,6 +652,7 @@ def completions() -> Response:
             instructions=_instructions_for_model(model),
             reasoning_param=reasoning_param,
             service_tier=service_tier,
+            thread_session=thread_session,
         )
         if error_resp is not None:
             error_info = error_info_from_flask_response("chatcore", "request_start", error_resp)
@@ -667,6 +718,7 @@ def completions() -> Response:
                         instructions=_instructions_for_model(model),
                         reasoning_param=reasoning_param,
                         service_tier=service_tier,
+                        thread_session=thread_session,
                     )
                     if next_error is not None:
                         next_error_info = error_info_from_flask_response("chatcore", "request_start", next_error)
@@ -693,8 +745,11 @@ def completions() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-        if service_tier:
+        if expose_service_tier and service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+        if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
+            resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
+            resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -782,15 +837,21 @@ def completions() -> Response:
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
-    if observed_service_tier:
+    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
+        completion["thread_id"] = upstream.chatmock_thread_id
+        completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
+    if expose_service_tier and observed_service_tier:
         completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
-    if service_tier:
+    if expose_service_tier and service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
-    if observed_service_tier:
+    if expose_service_tier and observed_service_tier:
         resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
+        resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
+        resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -811,7 +872,6 @@ def list_models() -> Response:
         ("gpt-5.1-codex", ["high", "medium", "low"]),
         ("gpt-5.1-codex-max", ["xhigh", "high", "medium", "low"]),
         ("gpt-5.1-codex-mini", []),
-        ("codex-mini", []),
     ]
     model_ids: List[str] = []
     for base, efforts in model_groups:

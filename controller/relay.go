@@ -115,6 +115,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		return
 	}
+	applyPlaygroundRuntimeDefaults(c, request)
 
 	relayInfo, err := relaycommon.GenRelayInfo(c, relayFormat, request, ws)
 	if err != nil {
@@ -440,9 +441,9 @@ func RelayMidjourney(c *gin.Context) {
 func RelayNotImplemented(c *gin.Context) {
 	err := types.OpenAIError{
 		Message: "API not implemented",
-		Type:    "new_api_error",
+		Type:    "invalid_request_error",
 		Param:   "",
-		Code:    "api_not_implemented",
+		Code:    "not_implemented",
 	}
 	c.JSON(http.StatusNotImplemented, gin.H{
 		"error": err,

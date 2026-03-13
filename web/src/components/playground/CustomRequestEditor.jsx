@@ -40,7 +40,6 @@ const CustomRequestEditor = ({
   const [errorMessage, setErrorMessage] = useState('');
   const [localValue, setLocalValue] = useState(customRequestBody || '');
 
-  // 当切换到自定义模式时，用默认payload初始化
   useEffect(() => {
     if (
       customRequestMode &&
@@ -59,7 +58,6 @@ const CustomRequestEditor = ({
     onCustomRequestBodyChange,
   ]);
 
-  // 同步外部传入的customRequestBody到本地状态
   useEffect(() => {
     if (customRequestBody !== localValue) {
       setLocalValue(customRequestBody || '');
@@ -67,7 +65,6 @@ const CustomRequestEditor = ({
     }
   }, [customRequestBody]);
 
-  // 验证JSON格式
   const validateJson = (value) => {
     if (!value.trim()) {
       setIsValid(true);
@@ -90,7 +87,6 @@ const CustomRequestEditor = ({
   const handleValueChange = (value) => {
     setLocalValue(value);
     validateJson(value);
-    // 始终保存用户输入，让预览逻辑处理JSON解析错误
     onCustomRequestBodyChange(value);
   };
 
@@ -111,14 +107,13 @@ const CustomRequestEditor = ({
       onCustomRequestBodyChange(formatted);
       setIsValid(true);
       setErrorMessage('');
-    } catch (error) {
-      // 如果格式化失败，保持原样
+    } catch {
+      // keep original text if invalid
     }
   };
 
   return (
     <div className='space-y-4'>
-      {/* 自定义模式开关 */}
       <div className='flex items-center justify-between'>
         <div className='flex items-center gap-2'>
           <Code size={16} className='text-gray-500' />
@@ -137,7 +132,6 @@ const CustomRequestEditor = ({
 
       {customRequestMode && (
         <>
-          {/* 提示信息 */}
           <Banner
             type='warning'
             description={t(
@@ -148,7 +142,6 @@ const CustomRequestEditor = ({
             closeIcon={null}
           />
 
-          {/* JSON编辑器 */}
           <div>
             <div className='flex items-center justify-between mb-2'>
               <Typography.Text strong className='text-sm'>
@@ -187,7 +180,7 @@ const CustomRequestEditor = ({
             <TextArea
               value={localValue}
               onChange={handleValueChange}
-              placeholder='{"model": "gpt-4o", "messages": [...], ...}'
+              placeholder='{"model":"gpt-4o","messages":[...]}'
               autosize={{ minRows: 8, maxRows: 20 }}
               className={`custom-request-textarea !rounded-lg font-mono text-sm ${!isValid ? '!border-red-500' : ''}`}
               style={{
@@ -204,7 +197,7 @@ const CustomRequestEditor = ({
 
             <Typography.Text className='text-xs text-gray-500 mt-2 block'>
               {t(
-                '请输入有效的JSON格式的请求体。您可以参考预览面板中的默认请求体格式。',
+                '请输入有效的JSON格式请求体。您可以参考当前默认请求体结构进行修改。',
               )}
             </Typography.Text>
           </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import {
   Banner,
   Button,
@@ -291,10 +291,8 @@ export default function SettingsChatCoreRuntime() {
                     {controlBlock(
                       '上游模式',
                       <Select
-                        value={settings.upstreamMode || 'auto'}
+                        value={settings.upstreamMode || 'codex-app-server'}
                         optionList={selectOptions([
-                          { label: 'auto（按模型家族自动分流）', value: 'auto' },
-                          { label: 'chatgpt-backend', value: 'chatgpt-backend' },
                           { label: 'codex-app-server', value: 'codex-app-server' },
                         ])}
                         onChange={(value) => handleSettingChange('upstreamMode', value)}
