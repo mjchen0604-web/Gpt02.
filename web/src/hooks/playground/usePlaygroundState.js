@@ -62,11 +62,6 @@ export const usePlaygroundState = () => {
   const [parameterEnabled, setParameterEnabled] = useState(
     savedConfig.parameterEnabled || DEFAULT_CONFIG.parameterEnabled,
   );
-  const [systemPrompt, setSystemPrompt] = useState(
-    typeof savedConfig.systemPrompt === 'string'
-      ? savedConfig.systemPrompt
-      : DEFAULT_CONFIG.systemPrompt,
-  );
   const [showSettings, setShowSettings] = useState(false);
   const [models, setModels] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -85,10 +80,6 @@ export const usePlaygroundState = () => {
   }, [t, initialMessages]);
 
   const handleInputChange = useCallback((name, value) => {
-    if (name === 'systemPrompt') {
-      setSystemPrompt(value);
-      return;
-    }
     setInputs((prev) => ({ ...prev, [name]: value }));
   }, []);
 
@@ -115,10 +106,9 @@ export const usePlaygroundState = () => {
       saveConfig({
         inputs,
         parameterEnabled,
-        systemPrompt,
       });
     }, 1000);
-  }, [inputs, parameterEnabled, systemPrompt]);
+  }, [inputs, parameterEnabled]);
 
   const handleConfigImport = useCallback((importedConfig) => {
     if (importedConfig.inputs) {
@@ -130,9 +120,6 @@ export const usePlaygroundState = () => {
         ...importedConfig.parameterEnabled,
       }));
     }
-    if (typeof importedConfig.systemPrompt === 'string') {
-      setSystemPrompt(importedConfig.systemPrompt);
-    }
     if (importedConfig.messages && Array.isArray(importedConfig.messages)) {
       setMessage(importedConfig.messages);
     }
@@ -143,7 +130,6 @@ export const usePlaygroundState = () => {
       const { resetMessages = false } = options;
       setInputs(DEFAULT_CONFIG.inputs);
       setParameterEnabled(DEFAULT_CONFIG.parameterEnabled);
-      setSystemPrompt(DEFAULT_CONFIG.systemPrompt);
 
       if (resetMessages) {
         setMessage([]);
@@ -195,17 +181,6 @@ export const usePlaygroundState = () => {
         ...(personalDefaults.parameterEnabled || {}),
         ...(savedConfigRaw.parameterEnabled || {}),
       });
-      if (typeof savedConfigRaw.systemPrompt === 'string') {
-        setSystemPrompt(savedConfigRaw.systemPrompt);
-      } else if (typeof personalDefaults.systemPrompt === 'string') {
-        setSystemPrompt(personalDefaults.systemPrompt);
-      } else if (typeof adminDefaults.systemPrompt === 'string') {
-        setSystemPrompt(adminDefaults.systemPrompt);
-      } else if (typeof globalDefaults.systemPrompt === 'string') {
-        setSystemPrompt(globalDefaults.systemPrompt);
-      } else {
-        setSystemPrompt(DEFAULT_CONFIG.systemPrompt);
-      }
     },
     [savedConfigRaw],
   );
@@ -240,7 +215,6 @@ export const usePlaygroundState = () => {
   return {
     inputs,
     parameterEnabled,
-    systemPrompt,
     showSettings,
     models,
     groups,
@@ -252,7 +226,6 @@ export const usePlaygroundState = () => {
     saveConfigTimeoutRef,
     setInputs,
     setParameterEnabled,
-    setSystemPrompt,
     setShowSettings,
     setModels,
     setGroups,

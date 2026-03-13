@@ -18,24 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import {
-  Button,
-  Card,
-  Select,
-  Switch,
-  TextArea,
-  Typography,
-} from '@douyinfe/semi-ui';
-import {
-  Bug,
-  Code,
-  FileText,
-  Settings,
-  Sparkles,
-  ToggleLeft,
-  Users,
-  X,
-} from 'lucide-react';
+import { Button, Card, Select, Switch, Typography } from '@douyinfe/semi-ui';
+import { Bug, Settings, Sparkles, ToggleLeft, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { renderGroupOption, selectFilter } from '../../helpers';
 import ConfigManager from './ConfigManager';
@@ -52,7 +36,6 @@ const VISIBILITY_OPTIONS = [
 const SettingsPanel = ({
   inputs,
   parameterEnabled,
-  systemPrompt,
   models,
   groups,
   styleState,
@@ -79,7 +62,6 @@ const SettingsPanel = ({
   const currentConfig = {
     inputs,
     parameterEnabled,
-    systemPrompt,
   };
 
   return (
@@ -222,22 +204,6 @@ const SettingsPanel = ({
           />
         </div>
 
-        <div>
-          <div className='flex items-center gap-2 mb-2'>
-            <FileText size={16} className='text-gray-500' />
-            <Typography.Text strong className='text-sm'>
-              {t('System Prompt')}
-            </Typography.Text>
-          </div>
-          <TextArea
-            value={systemPrompt}
-            onChange={(value) => onInputChange('systemPrompt', value)}
-            autosize={{ minRows: 4, maxRows: 10 }}
-            placeholder={t('输入系统提示词')}
-            className='!rounded-lg'
-          />
-        </div>
-
         {adminControls?.enabled && (
           <div className='space-y-4 rounded-xl border border-[var(--semi-color-border)] p-3'>
             <div className='flex items-center gap-2'>
@@ -264,9 +230,7 @@ const SettingsPanel = ({
               <Select
                 value={adminControls.customRequestVisibility}
                 optionList={VISIBILITY_OPTIONS}
-                onChange={(value) =>
-                  adminControls.onSaveVisibility?.('custom_request', value)
-                }
+                onChange={(value) => adminControls.onSaveVisibility?.('custom_request', value)}
                 className='!rounded-lg'
               />
             </div>

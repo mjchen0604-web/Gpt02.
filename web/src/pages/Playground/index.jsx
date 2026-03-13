@@ -108,7 +108,6 @@ const Playground = () => {
   const {
     inputs,
     parameterEnabled,
-    systemPrompt,
     showSettings,
     models,
     groups,
@@ -175,7 +174,6 @@ const Playground = () => {
           config: {
             inputs,
             parameterEnabled,
-            systemPrompt,
           },
         });
         if (!res.data?.success) {
@@ -189,7 +187,7 @@ const Playground = () => {
         showError(error);
       }
     },
-    [inputs, parameterEnabled, systemPrompt, loadPlaygroundConfig],
+    [inputs, parameterEnabled, loadPlaygroundConfig],
   );
 
   const savePersonalDefaults = useCallback(async () => {
@@ -198,14 +196,13 @@ const Playground = () => {
       config: {
         inputs,
         parameterEnabled,
-        systemPrompt,
       },
     });
     if (!res.data?.success) {
       throw new Error(res.data?.message || 'save failed');
     }
     await loadPlaygroundConfig();
-  }, [inputs, parameterEnabled, systemPrompt, loadPlaygroundConfig]);
+  }, [inputs, parameterEnabled, loadPlaygroundConfig]);
 
   const saveApplyToRealAPI = useCallback(
     async (enabled) => {
@@ -283,7 +280,6 @@ const Playground = () => {
     setMessage,
     inputs,
     parameterEnabled,
-    systemPrompt,
     sendRequest,
     saveMessagesImmediately,
   );
@@ -323,7 +319,7 @@ const Playground = () => {
           }
         }
       }
-      return buildApiPayload(nextMessages, systemPrompt, inputs, parameterEnabled);
+      return buildApiPayload(nextMessages, '', inputs, parameterEnabled);
     } catch (error) {
       console.error('构造预览请求体失败:', error);
       return null;
@@ -335,7 +331,6 @@ const Playground = () => {
     inputs,
     message,
     parameterEnabled,
-    systemPrompt,
   ]);
 
   useEffect(() => {
@@ -384,7 +379,7 @@ const Playground = () => {
         const newMessages = [...prevMessage, userMessage];
         const payload = buildApiPayload(
           newMessages,
-          systemPrompt,
+          '',
           inputs,
           parameterEnabled,
         );
@@ -411,7 +406,6 @@ const Playground = () => {
       saveMessagesImmediately,
       sendRequest,
       setMessage,
-      systemPrompt,
       t,
     ],
   );
@@ -515,7 +509,7 @@ const Playground = () => {
 
   useEffect(() => {
     debouncedSaveConfig();
-  }, [inputs, parameterEnabled, systemPrompt, debouncedSaveConfig]);
+  }, [inputs, parameterEnabled, debouncedSaveConfig]);
 
   const handleClearMessages = useCallback(() => {
     setMessage([]);
@@ -564,7 +558,6 @@ const Playground = () => {
               <OptimizedSettingsPanel
                 inputs={inputs}
                 parameterEnabled={parameterEnabled}
-                systemPrompt={systemPrompt}
                 models={models}
                 groups={groups}
                 styleState={styleState}

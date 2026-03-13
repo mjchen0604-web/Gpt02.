@@ -78,15 +78,8 @@ def _normalize_backend_service_tier(service_tier: str | None) -> str | None:
 
 
 def _prefers_codex_app_server(model: str, service_tier: str | None) -> bool:
-    normalized_model = str(model or "").strip().lower()
     normalized_tier = str(service_tier or "").strip().lower()
-    if normalized_tier == "fast":
-        return True
-    if "codex" in normalized_model or normalized_model.startswith("codex"):
-        return True
-    if normalized_model.startswith("gpt-5.4-fast"):
-        return True
-    return False
+    return normalized_tier == "fast"
 
 
 def resolve_upstream_mode(configured_mode: str, model: str, service_tier: str | None) -> str:

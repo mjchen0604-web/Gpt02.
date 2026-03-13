@@ -85,9 +85,6 @@ func sanitizePlaygroundConfig(raw map[string]any) map[string]any {
 			out["parameterEnabled"] = cleanEnabled
 		}
 	}
-	if prompt, ok := raw["systemPrompt"].(string); ok {
-		out["systemPrompt"] = prompt
-	}
 	return out
 }
 

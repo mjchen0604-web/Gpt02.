@@ -104,7 +104,6 @@ export const loadConfig = () => {
           ...DEFAULT_CONFIG.parameterEnabled,
           ...normalized.parameterEnabled,
         },
-        systemPrompt: DEFAULT_CONFIG.systemPrompt,
       };
 
       return mergedConfig;

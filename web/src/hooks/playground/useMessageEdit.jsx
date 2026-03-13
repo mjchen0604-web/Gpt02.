@@ -31,7 +31,6 @@ export const useMessageEdit = (
   setMessage,
   inputs,
   parameterEnabled,
-  systemPrompt,
   sendRequest,
   saveMessages,
 ) => {
@@ -100,7 +99,7 @@ export const useMessageEdit = (
               setTimeout(() => {
                 const payload = buildApiPayload(
                   messagesUntilUser,
-                  systemPrompt,
+                  '',
                   inputs,
                   parameterEnabled,
                 );
@@ -136,7 +135,6 @@ export const useMessageEdit = (
     t,
     inputs,
     parameterEnabled,
-    systemPrompt,
     sendRequest,
     setMessage,
     saveMessages,
