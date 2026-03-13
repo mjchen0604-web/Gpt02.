@@ -499,6 +499,20 @@ def _remove_label_state(label: str) -> None:
         _AUTH_POOL_STATE.pop(label, None)
 
 
+def _label_for_auth_file_path(path: str) -> str:
+    dirname = os.path.basename(os.path.dirname(path))
+    filename = os.path.basename(path)
+    return f"{dirname}/{filename}" if dirname else (filename or path)
+
+
+def _account_id_from_auth_obj(auth_obj: Dict[str, Any]) -> str:
+    access_token, account_id, id_token, _, _ = _extract_tokens_from_auth_obj(auth_obj)
+    del access_token  # unused in this helper
+    if not isinstance(account_id, str) or not account_id:
+        account_id = _derive_account_id(id_token) or ""
+    return str(account_id).strip()
+
+
 def _remove_auth_from_pool_file(pool_path: str, index: int) -> bool:
     raw_pool = _read_raw_json_file(pool_path)
     if not isinstance(raw_pool, (dict, list)):
@@ -526,13 +540,34 @@ def remove_chatgpt_auth_candidate(candidate: Dict[str, Any], *, reason: str = ""
     source_kind = str(candidate.get("source_kind") or "").strip()
     source_path = str(candidate.get("source_path") or "").strip()
     source_index = candidate.get("source_index")
+    account_id = str(candidate.get("account_id") or "").strip()
 
     success = False
     if source_kind in ("auth_file", "default_auth"):
+        current_paths = _parse_auth_files_env()
+        paths_to_remove: List[str] = []
         if source_path:
-            success = _delete_file(source_path)
-            updated = _remove_path_from_auth_files_env(source_path)
+            paths_to_remove.append(source_path)
+        if account_id:
+            for path in current_paths:
+                if path in paths_to_remove:
+                    continue
+                auth_obj = _read_json_file(path)
+                if not isinstance(auth_obj, dict):
+                    continue
+                if _account_id_from_auth_obj(auth_obj) == account_id:
+                    paths_to_remove.append(path)
+        if paths_to_remove:
+            updated = [item for item in current_paths if item not in paths_to_remove]
+            if updated:
+                os.environ["CHATGPT_LOCAL_AUTH_FILES"] = ",".join(updated)
+            else:
+                os.environ.pop("CHATGPT_LOCAL_AUTH_FILES", None)
             _persist_dashboard_auth_files(updated)
+            for path in paths_to_remove:
+                if _delete_file(path):
+                    success = True
+                _remove_label_state(_label_for_auth_file_path(path))
     elif source_kind == "auth_pool":
         if source_path and isinstance(source_index, int):
             success = _remove_auth_from_pool_file(source_path, source_index)
@@ -558,7 +593,10 @@ def _candidate_from_auth_obj(
     *,
     label: str,
     ensure_fresh: bool,
-) -> tuple[Dict[str, str] | None, bool]:
+    source_kind: str | None = None,
+    source_path: str | None = None,
+    source_index: int | None = None,
+) -> tuple[Dict[str, Any] | None, bool]:
     access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
     changed = False
     refreshed = False
@@ -604,11 +642,14 @@ def _candidate_from_auth_obj(
         "label": label,
         "access_token": access_token,
         "account_id": account_id,
+        "source_kind": source_kind or "",
+        "source_path": source_path or "",
+        "source_index": source_index,
     }, changed
 
 
-def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
+def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
     paths = _parse_auth_files_env()
     for idx, path in enumerate(paths):
         auth_obj = _read_json_file(path)
@@ -618,7 +659,13 @@ def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dic
         dirname = os.path.basename(os.path.dirname(path))
         filename = os.path.basename(path)
         label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
-        candidate, changed = _candidate_from_auth_obj(auth_obj, label=label, ensure_fresh=ensure_fresh)
+        candidate, changed = _candidate_from_auth_obj(
+            auth_obj,
+            label=label,
+            ensure_fresh=ensure_fresh,
+            source_kind="auth_file",
+            source_path=path,
+        )
         if changed:
             _write_json_file(path, auth_obj)
         if candidate is not None:
@@ -626,7 +673,7 @@ def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dic
     return out
 
 
-def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
     path = _find_auth_file_path("auth_pool.json")
     if not path:
         return []
@@ -638,7 +685,7 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
         return []
 
     changed = False
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     for idx, account_obj in enumerate(accounts):
         label = ""
         for key in ("name", "alias", "label"):
@@ -648,7 +695,14 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
                 break
         if not label:
             label = f"pool-{idx + 1}"
-        candidate, account_changed = _candidate_from_auth_obj(account_obj, label=label, ensure_fresh=ensure_fresh)
+        candidate, account_changed = _candidate_from_auth_obj(
+            account_obj,
+            label=label,
+            ensure_fresh=ensure_fresh,
+            source_kind="auth_pool",
+            source_path=path,
+            source_index=idx,
+        )
         changed = changed or account_changed
         if candidate is not None:
             out.append(candidate)
@@ -658,7 +712,7 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
     return out
 
 
-def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
     candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
     if not candidates and not _has_explicit_auth_files_config():
         candidates = _load_auth_candidates_from_pool_file(ensure_fresh=ensure_fresh)
@@ -667,7 +721,14 @@ def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dic
         if not account_id:
             account_id = _derive_account_id(id_token)
         if isinstance(access_token, str) and access_token and isinstance(account_id, str) and account_id:
-            candidates = [{"label": "default", "access_token": access_token, "account_id": account_id}]
+            candidates = [{
+                "label": "default",
+                "access_token": access_token,
+                "account_id": account_id,
+                "source_kind": "default_auth",
+                "source_path": _find_auth_file_path("auth.json") or "auth.json",
+                "source_index": None,
+            }]
     candidates = _apply_account_cooldown(candidates)
     return _ordered_candidates_by_strategy(candidates)
 
