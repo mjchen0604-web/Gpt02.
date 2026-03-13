@@ -13,12 +13,17 @@ from .config import CHATGPT_RESPONSES_URL
 from .http import build_cors_headers
 from .reasoning import split_model_alias
 from .session import ensure_session_id
-from .upstream_errors import build_error_info, build_openai_error_response
+from .upstream_errors import (
+    build_error_info,
+    build_openai_error_response,
+    error_info_from_http_response,
+)
 from .utils import (
     get_effective_chatgpt_auth_candidates,
     get_max_retry_interval_seconds,
     get_request_retry_limit,
     get_retryable_statuses,
+    handle_chatgpt_candidate_failure,
     mark_chatgpt_auth_result,
 )
 
@@ -347,7 +352,8 @@ def _start_chatgpt_backend_request(
             has_more_rounds = round_idx < request_retry_limit
 
             if should_retry:
-                mark_chatgpt_auth_result(label, success=False, status_code=status)
+                error_info = error_info_from_http_response("upstream", "http", upstream)
+                handle_chatgpt_candidate_failure(candidate, error_info)
                 if has_more_candidates or has_more_rounds:
                     if verbose:
                         print(f"Upstream status {status} for {label}; retrying with next account.")
