@@ -868,7 +868,7 @@ class CodexAppServerPoolManager:
         if not isinstance(label, str) or not label:
             return
         now = time.time()
-        max_retry_interval = max(5, int(os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "30"))
+        max_retry_interval = max(5, int(os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "5"))
         classification = classify_error(error_info or {"raw_status": status_code, "raw_message": error_message})
         with self._lock:
             state = dict(self._request_state.get(label) or {})

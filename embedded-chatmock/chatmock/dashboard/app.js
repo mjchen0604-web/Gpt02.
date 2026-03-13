@@ -212,8 +212,8 @@ function renderLogs(payload) {
 function readSettingsForm() {
   return {
     routingStrategy: nodes.setRoutingStrategy?.value || "round-robin",
-    requestRetry: Number(nodes.setRequestRetry?.value || 0),
-    maxRetryInterval: Number(nodes.setMaxRetryInterval?.value || 30),
+    requestRetry: Number(nodes.setRequestRetry?.value || 2),
+    maxRetryInterval: Number(nodes.setMaxRetryInterval?.value || 5),
     reasoningEffort: nodes.setReasoningEffort?.value || "medium",
     reasoningSummary: nodes.setReasoningSummary?.value || "auto",
     reasoningCompat: nodes.setReasoningCompat?.value || "think-tags",
@@ -237,10 +237,10 @@ function applySettingsForm(settings = {}) {
     nodes.setRoutingStrategy.value = settings.routingStrategy || "round-robin";
   }
   if (nodes.setRequestRetry) {
-    nodes.setRequestRetry.value = String(settings.requestRetry ?? 3);
+    nodes.setRequestRetry.value = String(settings.requestRetry ?? 2);
   }
   if (nodes.setMaxRetryInterval) {
-    nodes.setMaxRetryInterval.value = String(settings.maxRetryInterval ?? 30);
+    nodes.setMaxRetryInterval.value = String(settings.maxRetryInterval ?? 5);
   }
   if (nodes.setReasoningEffort) {
     nodes.setReasoningEffort.value = settings.reasoningEffort || "medium";
@@ -532,5 +532,4 @@ async function init() {
 }
 
 init();
-
 

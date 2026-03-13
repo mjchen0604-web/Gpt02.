@@ -69,6 +69,45 @@ def _wrap_stream_logging(label: str, iterator, enabled: bool):
     return _gen()
 
 
+def _log_fast_probe(
+    phase: str,
+    *,
+    requested_model: str | None,
+    normalized_model: str | None,
+    selected_mode: str,
+    requested_service_tier: str | None,
+    observed_service_tier: str | None = None,
+    is_stream: bool = False,
+    upstream: Any | None = None,
+    extra: Dict[str, Any] | None = None,
+) -> None:
+    should_log = bool(requested_service_tier) or ("-fast" in str(requested_model or "").lower()) or selected_mode == "codex-app-server"
+    if not should_log:
+        return
+    payload: Dict[str, Any] = {
+        "phase": phase,
+        "requested_model": requested_model,
+        "normalized_model": normalized_model,
+        "selected_upstream_mode": selected_mode,
+        "requested_service_tier": requested_service_tier,
+        "observed_service_tier": observed_service_tier,
+        "stream": bool(is_stream),
+    }
+    if upstream is not None:
+        payload["upstream_source"] = getattr(upstream, "chatmock_source", None)
+        payload["candidate_label"] = getattr(upstream, "chatmock_candidate_label", None)
+        payload["thread_mode"] = getattr(upstream, "chatmock_thread_mode", None)
+    if isinstance(extra, dict):
+        payload.update(extra)
+    try:
+        current_app.logger.info("fast_probe %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    except Exception:
+        try:
+            print(f"fast_probe {payload}")
+        except Exception:
+            pass
+
+
 def _instructions_for_model(model: str) -> str:
     base = current_app.config.get("BASE_INSTRUCTIONS", BASE_INSTRUCTIONS)
     if "codex" in (model or "").lower():
@@ -545,6 +584,19 @@ def chat_completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
+    selected_mode = resolve_upstream_mode(
+        str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower(),
+        model or "",
+        service_tier,
+    )
+    _log_fast_probe(
+        "start",
+        requested_model=requested_model,
+        normalized_model=model,
+        selected_mode=selected_mode,
+        requested_service_tier=service_tier,
+        is_stream=is_stream,
+    )
 
     attempt_limit = _upstream_attempt_limit(is_stream, model, service_tier)
     last_error_info: Dict[str, Any] | None = None
@@ -569,6 +621,15 @@ def chat_completions() -> Response:
             last_error_info = error_info
             if not is_stream and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
                 continue
+            _log_fast_probe(
+                "request_start_error",
+                requested_model=requested_model,
+                normalized_model=model,
+                selected_mode=selected_mode,
+                requested_service_tier=service_tier,
+                is_stream=is_stream,
+                extra={"error_info": error_info},
+            )
             return build_openai_error_response(error_info)
 
         record_rate_limits_from_response(upstream)
@@ -609,6 +670,16 @@ def chat_completions() -> Response:
                 except Exception:
                     pass
                 continue
+            _log_fast_probe(
+                "http_error",
+                requested_model=requested_model,
+                normalized_model=model,
+                selected_mode=selected_mode,
+                requested_service_tier=service_tier,
+                is_stream=is_stream,
+                upstream=upstream,
+                extra={"error_info": error_info},
+            )
             return build_openai_error_response(error_info)
         if not is_stream:
             nonstream_result = _consume_chat_completion_nonstream(
@@ -626,6 +697,16 @@ def chat_completions() -> Response:
                     upstream = None
                     nonstream_result = None
                     continue
+                _log_fast_probe(
+                    "nonstream_error",
+                    requested_model=requested_model,
+                    normalized_model=model,
+                    selected_mode=selected_mode,
+                    requested_service_tier=service_tier,
+                    is_stream=is_stream,
+                    upstream=upstream,
+                    extra={"error_info": error_info},
+                )
                 return build_openai_error_response(error_info or build_error_info(
                     source="chatcore",
                     phase="nonstream",
@@ -637,6 +718,15 @@ def chat_completions() -> Response:
         break
 
     if upstream is None:
+        _log_fast_probe(
+            "retry_exhausted",
+            requested_model=requested_model,
+            normalized_model=model,
+            selected_mode=selected_mode,
+            requested_service_tier=service_tier,
+            is_stream=is_stream,
+            extra={"error_info": last_error_info},
+        )
         return build_openai_error_response(
             last_error_info
             or build_error_info(
@@ -703,6 +793,16 @@ def chat_completions() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+        _log_fast_probe(
+            "stream_ready",
+            requested_model=requested_model,
+            normalized_model=model,
+            selected_mode=selected_mode,
+            requested_service_tier=service_tier,
+            observed_service_tier=getattr(upstream, "_observed_service_tier", None),
+            is_stream=is_stream,
+            upstream=upstream,
+        )
         if expose_service_tier and service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
         if isinstance(getattr(upstream, "_observed_service_tier", None), str) and str(getattr(upstream, "_observed_service_tier")).strip().lower() == "fast":
@@ -753,6 +853,17 @@ def chat_completions() -> Response:
     if verbose:
         _log_json("OUT POST /v1/chat/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
+    _log_fast_probe(
+        "done",
+        requested_model=requested_model,
+        normalized_model=model,
+        selected_mode=selected_mode,
+        requested_service_tier=service_tier,
+        observed_service_tier=observed_service_tier,
+        is_stream=is_stream,
+        upstream=upstream,
+        extra={"response_id": response_id},
+    )
     if expose_service_tier and service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
@@ -815,6 +926,19 @@ def completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
+    selected_mode = resolve_upstream_mode(
+        str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower(),
+        model or "",
+        service_tier,
+    )
+    _log_fast_probe(
+        "start",
+        requested_model=requested_model,
+        normalized_model=model,
+        selected_mode=selected_mode,
+        requested_service_tier=service_tier,
+        is_stream=stream_req,
+    )
     attempt_limit = _upstream_attempt_limit(stream_req, model, service_tier)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
@@ -834,6 +958,15 @@ def completions() -> Response:
             last_error_info = error_info
             if not stream_req and should_retry_next_candidate(error_info) and attempt_index + 1 < attempt_limit:
                 continue
+            _log_fast_probe(
+                "request_start_error",
+                requested_model=requested_model,
+                normalized_model=model,
+                selected_mode=selected_mode,
+                requested_service_tier=service_tier,
+                is_stream=stream_req,
+                extra={"error_info": error_info},
+            )
             return build_openai_error_response(error_info)
 
         record_rate_limits_from_response(upstream)
@@ -847,6 +980,16 @@ def completions() -> Response:
                 except Exception:
                     pass
                 continue
+            _log_fast_probe(
+                "http_error",
+                requested_model=requested_model,
+                normalized_model=model,
+                selected_mode=selected_mode,
+                requested_service_tier=service_tier,
+                is_stream=stream_req,
+                upstream=upstream,
+                extra={"error_info": error_info},
+            )
             return build_openai_error_response(error_info)
         if not stream_req:
             nonstream_result = _consume_text_completion_nonstream(
@@ -863,6 +1006,16 @@ def completions() -> Response:
                     upstream = None
                     nonstream_result = None
                     continue
+                _log_fast_probe(
+                    "nonstream_error",
+                    requested_model=requested_model,
+                    normalized_model=model,
+                    selected_mode=selected_mode,
+                    requested_service_tier=service_tier,
+                    is_stream=stream_req,
+                    upstream=upstream,
+                    extra={"error_info": error_info},
+                )
                 return build_openai_error_response(error_info or build_error_info(
                     source="chatcore",
                     phase="nonstream",
@@ -874,6 +1027,15 @@ def completions() -> Response:
         break
 
     if upstream is None:
+        _log_fast_probe(
+            "retry_exhausted",
+            requested_model=requested_model,
+            normalized_model=model,
+            selected_mode=selected_mode,
+            requested_service_tier=service_tier,
+            is_stream=stream_req,
+            extra={"error_info": last_error_info},
+        )
         return build_openai_error_response(
             last_error_info
             or build_error_info(
@@ -943,6 +1105,16 @@ def completions() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+        _log_fast_probe(
+            "stream_ready",
+            requested_model=requested_model,
+            normalized_model=model,
+            selected_mode=selected_mode,
+            requested_service_tier=service_tier,
+            observed_service_tier=getattr(upstream, "_observed_service_tier", None),
+            is_stream=stream_req,
+            upstream=upstream,
+        )
         if expose_service_tier and service_tier:
             resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
         if isinstance(getattr(upstream, "_observed_service_tier", None), str) and str(getattr(upstream, "_observed_service_tier")).strip().lower() == "fast":
@@ -989,6 +1161,17 @@ def completions() -> Response:
     if verbose:
         _log_json("OUT POST /v1/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
+    _log_fast_probe(
+        "done",
+        requested_model=requested_model,
+        normalized_model=model,
+        selected_mode=selected_mode,
+        requested_service_tier=service_tier,
+        observed_service_tier=observed_service_tier,
+        is_stream=stream_req,
+        upstream=upstream,
+        extra={"response_id": response_id},
+    )
     if expose_service_tier and service_tier:
         resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:

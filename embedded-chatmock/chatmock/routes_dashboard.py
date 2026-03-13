@@ -130,6 +130,17 @@ def _parse_auth_files_payload(value: Any, fallback: List[str]) -> List[str]:
     return list(fallback)
 
 
+def _configured_auth_files(stored: Dict[str, Any] | None = None) -> List[str]:
+    stored = stored if isinstance(stored, dict) else {}
+    stored_files = _parse_auth_files_payload(stored.get("authFiles"), [])
+    if stored_files:
+        return stored_files
+    current_files = _current_auth_files()
+    if current_files:
+        return current_files
+    return _discover_auth_files(_auth_storage_root())
+
+
 def _auth_storage_root() -> Path:
     explicit = (os.getenv("CHATMOCK_DASHBOARD_AUTH_DIR") or "").strip()
     if explicit:
@@ -228,7 +239,7 @@ def _get_runtime_app():
 def _current_settings_snapshot(app=None) -> Dict[str, Any]:
     runtime_app = app or _get_runtime_app()
     stored = _read_settings_file()
-    auth_files = _merge_auth_files(_current_auth_files(), _discover_auth_files(_auth_storage_root()), replace=False)
+    auth_files = _configured_auth_files(stored)
 
     if runtime_app is not None:
         reasoning_effort = str(runtime_app.config.get("REASONING_EFFORT", "medium"))
@@ -397,11 +408,7 @@ def apply_persisted_dashboard_settings(app) -> Dict[str, Any]:
     if not stored:
         return _current_settings_snapshot(app=app)
     stored = dict(stored)
-    stored["authFiles"] = _merge_auth_files(
-        _parse_auth_files_payload(stored.get("authFiles"), []),
-        _discover_auth_files(_auth_storage_root()),
-        replace=False,
-    )
+    stored["authFiles"] = _configured_auth_files(stored)
     return _apply_settings(stored, app=app, persist=False)
 
 
@@ -719,11 +726,7 @@ def dashboard_action_upload_auths():
     upload_results: List[Dict[str, Any]] = []
     primary_payload: Dict[str, Any] | None = None
 
-    existing_files = [] if replace else _merge_auth_files(
-        _current_auth_files(),
-        _discover_auth_files(auth_root),
-        replace=False,
-    )
+    existing_files = [] if replace else _configured_auth_files(_read_settings_file())
     used_labels: set[str] = set()
     fingerprint_to_path: Dict[str, str] = {}
 

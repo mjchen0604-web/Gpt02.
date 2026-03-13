@@ -701,20 +701,20 @@ def _ordered_candidates_by_strategy(candidates: List[Dict[str, str]]) -> List[Di
 
 
 def get_request_retry_limit() -> int:
-    raw = (os.getenv("CHATGPT_LOCAL_REQUEST_RETRY") or "3").strip()
+    raw = (os.getenv("CHATGPT_LOCAL_REQUEST_RETRY") or "2").strip()
     try:
         value = int(raw)
     except Exception:
-        value = 3
+        value = 2
     return max(0, min(10, value))
 
 
 def get_max_retry_interval_seconds() -> int:
-    raw = (os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "30").strip()
+    raw = (os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "5").strip()
     try:
         value = int(raw)
     except Exception:
-        value = 30
+        value = 5
     return max(1, min(300, value))
 
 

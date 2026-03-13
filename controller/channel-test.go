@@ -56,7 +56,49 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 	return normalized
 }
 
+func shouldRetryChannelTestResult(result testResult, remaining int) bool {
+	if remaining <= 0 {
+		return false
+	}
+	if result.newAPIError == nil {
+		return false
+	}
+	if types.IsSkipRetryError(result.newAPIError) {
+		return false
+	}
+	code := result.newAPIError.StatusCode
+	if code >= 200 && code < 300 {
+		return false
+	}
+	if code < 100 || code > 599 {
+		return true
+	}
+	return operation_setting.ShouldRetryByStatusCode(code)
+}
+
 func testChannel(channel *model.Channel, testModel string, endpointType string, isStream bool) testResult {
+	var lastResult testResult
+	maxRetries := common.RetryTimes
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		lastResult = testChannelOnce(channel, testModel, endpointType, isStream)
+		if !shouldRetryChannelTestResult(lastResult, maxRetries-attempt) {
+			return lastResult
+		}
+		common.SysLog(fmt.Sprintf(
+			"channel test retrying: channel_id=%d name=%s model=%s endpoint_type=%s attempt=%d status=%d err=%v",
+			channel.Id,
+			channel.Name,
+			testModel,
+			endpointType,
+			attempt+1,
+			lastResult.newAPIError.StatusCode,
+			lastResult.localErr,
+		))
+	}
+	return lastResult
+}
+
+func testChannelOnce(channel *model.Channel, testModel string, endpointType string, isStream bool) testResult {
 	tik := time.Now()
 	var unsupportedTestChannelTypes = []int{
 		constant.ChannelTypeMidjourney,
@@ -431,7 +473,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 			return testResult{
 				context:     c,
 				localErr:    err,
-				newAPIError: types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError),
+				newAPIError: types.NewOpenAIError(err, types.ErrorCodeBadResponse, httpResp.StatusCode),
 			}
 		}
 	}
