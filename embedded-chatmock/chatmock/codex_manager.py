@@ -115,6 +115,30 @@ def _copy_text_file(src: Path, dst: Path) -> None:
         pass
 
 
+def _same_file_contents(left: Path, right: Path) -> bool:
+    try:
+        if not left.exists() or not right.exists():
+            return False
+        return left.read_bytes() == right.read_bytes()
+    except Exception:
+        return False
+
+
+def _clear_codex_runtime_state(codex_home: Path) -> None:
+    if not codex_home.exists():
+        return
+    patterns = ("state*",)
+    for pattern in patterns:
+        for path in codex_home.glob(pattern):
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 class ManagedCodexUpstream:
     def __init__(self, upstream: Any, pool: "CodexAppServerPoolManager", label: str) -> None:
         self._upstream = upstream
@@ -571,8 +595,13 @@ class CodexAppServerPoolManager:
         if not _has_auth_tokens(payload):
             return
         codex_home.mkdir(parents=True, exist_ok=True)
-        if auth_path.resolve() != (codex_home / "auth.json").resolve():
-            _copy_text_file(auth_path, codex_home / "auth.json")
+        target_auth = codex_home / "auth.json"
+        auth_changed = False
+        if auth_path.resolve() != target_auth.resolve():
+            auth_changed = not _same_file_contents(auth_path, target_auth)
+            _copy_text_file(auth_path, target_auth)
+        if auth_changed:
+            _clear_codex_runtime_state(codex_home)
         config_seed = self._default_config_seed()
         if config_seed is not None and config_seed.exists():
             target_config = codex_home / "config.toml"
