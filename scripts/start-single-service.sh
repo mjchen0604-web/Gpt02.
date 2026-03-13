@@ -7,12 +7,17 @@ AUTH_DIR="${CHATMOCK_AUTH_DIR:-/data/chatmock-accounts}"
 CHAT_ROOT="/app/embedded-chatmock"
 SETTINGS_PATH="${CHATMOCK_DASHBOARD_SETTINGS_PATH:-/data/chatmock-dashboard-settings.json}"
 CODEX_HOME="${CODEX_HOME:-/data/.codex}"
+CODEX_CONFIG_SEED="${CHATMOCK_CODEX_CONFIG_SEED:-$CHAT_ROOT/config.toml}"
 
 mkdir -p "$AUTH_DIR" /data "$CODEX_HOME"
 export CHATMOCK_DASHBOARD_AUTH_DIR="${CHATMOCK_DASHBOARD_AUTH_DIR:-$AUTH_DIR}"
 export CHATMOCK_DASHBOARD_SETTINGS_PATH="$SETTINGS_PATH"
 export CODEX_HOME
 export CHATGPT_LOCAL_HOME="${CHATGPT_LOCAL_HOME:-$CODEX_HOME}"
+
+if [[ -f "$CODEX_CONFIG_SEED" && ! -f "$CODEX_HOME/config.toml" ]]; then
+  cp "$CODEX_CONFIG_SEED" "$CODEX_HOME/config.toml"
+fi
 
 build_auth_files_from_env() {
   local -a files=()

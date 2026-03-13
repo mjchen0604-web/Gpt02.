@@ -544,8 +544,14 @@ class CodexAppServerPoolManager:
         print(entry)
 
     def _default_config_seed(self) -> Path | None:
-        path = _default_codex_home() / "config.toml"
-        return path if path.exists() else None
+        paths = [
+            _default_codex_home() / "config.toml",
+            Path(__file__).resolve().parent.parent / "config.toml",
+        ]
+        for path in paths:
+            if path.exists():
+                return path
+        return None
 
     def _desired_entries(self, auth_files: list[str] | None = None) -> list[dict[str, Any]]:
         paths = auth_files if auth_files is not None else _parse_auth_files_env()
