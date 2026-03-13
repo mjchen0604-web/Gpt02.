@@ -213,6 +213,7 @@ class CodexAppServerManager:
         autostart: bool | None = None,
         binary: str | None = None,
         flags: str | None = None,
+        on_log_line: Any | None = None,
     ) -> None:
         self._url = app_server_url.strip() or "ws://127.0.0.1:8787"
         self._host, self._port = _parse_ws_endpoint(self._url)
@@ -228,6 +229,7 @@ class CodexAppServerManager:
         self._last_error: str = ""
         self._last_exit_code: int | None = None
         self._log_lines: deque[str] = deque(maxlen=400)
+        self._on_log_line = on_log_line
         atexit.register(self._atexit_stop)
 
     @property
@@ -427,6 +429,12 @@ class CodexAppServerManager:
                 if not line:
                     break
                 self._append_log(f"[codex] {line.rstrip()}")
+                callback = self._on_log_line
+                if callable(callback):
+                    try:
+                        callback(self._label, line.rstrip())
+                    except Exception:
+                        pass
         finally:
             try:
                 stream.close()
@@ -591,6 +599,7 @@ class CodexAppServerPoolManager:
                         autostart=self._autostart,
                         binary=self._binary,
                         flags=self._flags,
+                        on_log_line=self._handle_instance_log_line,
                     )
                 instance = self._instances[label]
                 if self._managed and self._autostart and instance.has_auth():
@@ -603,6 +612,34 @@ class CodexAppServerPoolManager:
             except Exception as exc:
                 self._append_log(f"failed to start {instance.label}: {exc}")
         return desired_labels
+
+    def _handle_instance_log_line(self, label: str, line: str) -> None:
+        if not isinstance(label, str) or not label or not isinstance(line, str):
+            return
+        lowered = line.lower()
+        if "deactivated_workspace" not in lowered:
+            return
+        now = time.time()
+        with self._lock:
+            state = dict(self._request_state.get(label) or {})
+            state["failures"] = int(state.get("failures") or 0) + 1
+            state["cooldown_until"] = now + float(24 * 60 * 60)
+            state["last_error"] = "deactivated_workspace"
+            state["last_status"] = 402
+            state["status"] = "removed_invalid"
+            state["last_classification"] = "account_invalid"
+            state["last_raw_code"] = "deactivated_workspace"
+            state["last_raw_message"] = line
+            state["updated_at"] = now
+            state["last_failure_at"] = _utc_now()
+            self._request_state[label] = state
+        self._append_log(f"detected deactivated_workspace for {label}; evicting candidate")
+        threading.Thread(
+            target=self.remove_auth_for_label,
+            args=(label,),
+            kwargs={"reason": "deactivated_workspace"},
+            daemon=True,
+        ).start()
 
     def status_all(self) -> list[dict[str, Any]]:
         self._sync_instances()

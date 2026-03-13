@@ -186,6 +186,239 @@ def _resolve_web_search_mode(
     return "disabled"
 
 
+def _should_retry_nonstream_candidate(error_info: Dict[str, Any] | None) -> bool:
+    if not isinstance(error_info, dict):
+        return False
+    if should_retry_next_candidate(error_info):
+        return True
+    source = str(error_info.get("source") or "").strip().lower()
+    return source == "codex-app-server"
+
+
+def _consume_chat_completion_nonstream(
+    upstream: Any,
+    *,
+    requested_model: str | None,
+    model: str,
+    created: int,
+    reasoning_compat: str,
+) -> Dict[str, Any]:
+    full_text = ""
+    reasoning_summary_text = ""
+    reasoning_full_text = ""
+    response_id = "chatcmpl"
+    tool_calls: List[Dict[str, Any]] = []
+    error_message: str | None = None
+    error_info: Dict[str, Any] | None = None
+    usage_obj: Dict[str, int] | None = None
+    observed_service_tier: str | None = None
+    completed_ok = False
+
+    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
+        try:
+            usage = (evt.get("response") or {}).get("usage")
+            if not isinstance(usage, dict):
+                return None
+            pt = int(usage.get("input_tokens") or 0)
+            ct = int(usage.get("output_tokens") or 0)
+            tt = int(usage.get("total_tokens") or (pt + ct))
+            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+        except Exception:
+            return None
+
+    try:
+        for raw in upstream.iter_lines(decode_unicode=False):
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):].strip()
+            if not data:
+                continue
+            if data == "[DONE]":
+                break
+            try:
+                evt = json.loads(data)
+            except Exception:
+                continue
+            kind = evt.get("type")
+            mu = _extract_usage(evt)
+            if mu:
+                usage_obj = mu
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
+                response_id = evt["response"].get("id") or response_id
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
+            if kind == "response.output_text.delta":
+                full_text += evt.get("delta") or ""
+            elif kind == "response.reasoning_summary_text.delta":
+                reasoning_summary_text += evt.get("delta") or ""
+            elif kind == "response.reasoning_text.delta":
+                reasoning_full_text += evt.get("delta") or ""
+            elif kind == "response.output_item.done":
+                item = evt.get("item") or {}
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    call_id = item.get("call_id") or item.get("id") or ""
+                    name = item.get("name") or ""
+                    args = item.get("arguments") or ""
+                    if not isinstance(args, str):
+                        try:
+                            args = json.dumps(args, ensure_ascii=False)
+                        except Exception:
+                            args = "{}"
+                    if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
+                        tool_calls.append(
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {"name": name, "arguments": args},
+                            }
+                        )
+            elif kind == "response.failed":
+                error_info = error_info_from_event_response(
+                    getattr(upstream, "chatmock_source", "upstream"),
+                    "stream",
+                    evt.get("response"),
+                )
+                error_message = error_info.get("raw_message") or "response.failed"
+            elif kind == "response.completed":
+                completed_ok = True
+                break
+    finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
+        elif error_message and hasattr(upstream, "mark_failure"):
+            try:
+                upstream.mark_failure(error_message)
+            except Exception:
+                pass
+        upstream.close()
+
+    if error_message:
+        if error_info is None:
+            error_info = build_error_info(
+                source=getattr(upstream, "chatmock_source", "upstream"),
+                phase="stream",
+                raw_status=int(getattr(upstream, "status_code", 502) or 502),
+                raw_message=error_message,
+                raw_body={"message": error_message},
+            )
+        return {"ok": False, "error_info": error_info}
+
+    if tool_calls:
+        message = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+    else:
+        message = {"role": "assistant", "content": full_text if full_text else None}
+        message = apply_reasoning_to_message(message, reasoning_summary_text, reasoning_full_text, reasoning_compat)
+
+    return {
+        "ok": True,
+        "response_id": response_id or "chatcmpl",
+        "message": message,
+        "usage_obj": usage_obj,
+        "observed_service_tier": observed_service_tier,
+        "created": created,
+        "model": requested_model or model,
+    }
+
+
+def _consume_text_completion_nonstream(
+    upstream: Any,
+    *,
+    requested_model: str | None,
+    model: str,
+    created: int,
+) -> Dict[str, Any]:
+    full_text = ""
+    response_id = "cmpl"
+    usage_obj: Dict[str, int] | None = None
+    observed_service_tier: str | None = None
+    completed_ok = False
+    error_message: str | None = None
+    error_info: Dict[str, Any] | None = None
+
+    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
+        try:
+            usage = (evt.get("response") or {}).get("usage")
+            if not isinstance(usage, dict):
+                return None
+            pt = int(usage.get("input_tokens") or 0)
+            ct = int(usage.get("output_tokens") or 0)
+            tt = int(usage.get("total_tokens") or (pt + ct))
+            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+        except Exception:
+            return None
+
+    try:
+        for raw_line in upstream.iter_lines(decode_unicode=False):
+            if not raw_line:
+                continue
+            line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):].strip()
+            if not data or data == "[DONE]":
+                if data == "[DONE]":
+                    break
+                continue
+            try:
+                evt = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
+                response_id = evt["response"].get("id") or response_id
+            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
+                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
+            mu = _extract_usage(evt)
+            if mu:
+                usage_obj = mu
+            kind = evt.get("type")
+            if kind == "response.output_text.delta":
+                full_text += evt.get("delta") or ""
+            elif kind == "response.failed":
+                error_info = error_info_from_event_response(
+                    getattr(upstream, "chatmock_source", "upstream"),
+                    "stream",
+                    evt.get("response"),
+                )
+                error_message = error_info.get("raw_message") or "response.failed"
+            elif kind == "response.completed":
+                completed_ok = True
+                break
+    finally:
+        if completed_ok and hasattr(upstream, "mark_success"):
+            try:
+                upstream.mark_success()
+            except Exception:
+                pass
+        upstream.close()
+
+    if error_message:
+        if error_info is None:
+            error_info = build_error_info(
+                source=getattr(upstream, "chatmock_source", "upstream"),
+                phase="stream",
+                raw_status=int(getattr(upstream, "status_code", 502) or 502),
+                raw_message=error_message,
+                raw_body={"message": error_message},
+            )
+        return {"ok": False, "error_info": error_info}
+
+    return {
+        "ok": True,
+        "response_id": response_id or "cmpl",
+        "full_text": full_text,
+        "usage_obj": usage_obj,
+        "observed_service_tier": observed_service_tier,
+        "created": created,
+        "model": requested_model or model,
+    }
+
+
 @openai_bp.route("/v1/chat/completions", methods=["POST"])
 def chat_completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
@@ -313,6 +546,7 @@ def chat_completions() -> Response:
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     created = int(time.time())
+    nonstream_result: Dict[str, Any] | None = None
     for attempt_index in range(attempt_limit):
         upstream, error_resp = start_upstream_request(
             model,
@@ -358,7 +592,8 @@ def chat_completions() -> Response:
                 record_rate_limits_from_response(upstream2)
                 if err2 is None and upstream2 is not None and upstream2.status_code < 400:
                     upstream = upstream2
-                    break
+                    if is_stream:
+                        break
                 if err2 is not None:
                     error_info = error_info_from_flask_response("chatcore", "tool_retry", err2)
                 elif upstream2 is not None:
@@ -371,6 +606,30 @@ def chat_completions() -> Response:
                     pass
                 continue
             return build_openai_error_response(error_info)
+        if not is_stream:
+            nonstream_result = _consume_chat_completion_nonstream(
+                upstream,
+                requested_model=requested_model,
+                model=model,
+                created=created,
+                reasoning_compat=reasoning_compat,
+            )
+            if not nonstream_result.get("ok"):
+                error_info = nonstream_result.get("error_info")
+                if isinstance(error_info, dict):
+                    last_error_info = error_info
+                if _should_retry_nonstream_candidate(error_info) and attempt_index + 1 < attempt_limit:
+                    upstream = None
+                    nonstream_result = None
+                    continue
+                return build_openai_error_response(error_info or build_error_info(
+                    source="chatcore",
+                    phase="nonstream",
+                    raw_status=502,
+                    raw_message="Unknown upstream failure",
+                    raw_body={"message": "Unknown upstream failure"},
+                ))
+            break
         break
 
     if upstream is None:
@@ -449,116 +708,22 @@ def chat_completions() -> Response:
             resp.headers.setdefault(k, v)
         return resp
 
-    full_text = ""
-    reasoning_summary_text = ""
-    reasoning_full_text = ""
-    response_id = "chatcmpl"
-    tool_calls: List[Dict[str, Any]] = []
-    error_message: str | None = None
-    error_info: Dict[str, Any] | None = None
-    usage_obj: Dict[str, int] | None = None
-    observed_service_tier: str | None = None
-    completed_ok = False
-
-    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-        try:
-            usage = (evt.get("response") or {}).get("usage")
-            if not isinstance(usage, dict):
-                return None
-            pt = int(usage.get("input_tokens") or 0)
-            ct = int(usage.get("output_tokens") or 0)
-            tt = int(usage.get("total_tokens") or (pt + ct))
-            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-        except Exception:
-            return None
-    try:
-        for raw in upstream.iter_lines(decode_unicode=False):
-            if not raw:
-                continue
-            line = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
-            if not line.startswith("data: "):
-                continue
-            data = line[len("data: "):].strip()
-            if not data:
-                continue
-            if data == "[DONE]":
-                break
-            try:
-                evt = json.loads(data)
-            except Exception:
-                continue
-            kind = evt.get("type")
-            mu = _extract_usage(evt)
-            if mu:
-                usage_obj = mu
-            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                response_id = evt["response"].get("id") or response_id
-            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
-                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
-            if kind == "response.output_text.delta":
-                full_text += evt.get("delta") or ""
-            elif kind == "response.reasoning_summary_text.delta":
-                reasoning_summary_text += evt.get("delta") or ""
-            elif kind == "response.reasoning_text.delta":
-                reasoning_full_text += evt.get("delta") or ""
-            elif kind == "response.output_item.done":
-                item = evt.get("item") or {}
-                if isinstance(item, dict) and item.get("type") == "function_call":
-                    call_id = item.get("call_id") or item.get("id") or ""
-                    name = item.get("name") or ""
-                    args = item.get("arguments") or ""
-                    if not isinstance(args, str):
-                        try:
-                            args = json.dumps(args, ensure_ascii=False)
-                        except Exception:
-                            args = "{}"
-                    if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
-                        tool_calls.append(
-                            {
-                                "id": call_id,
-                                "type": "function",
-                                "function": {"name": name, "arguments": args},
-                            }
-                        )
-            elif kind == "response.failed":
-                error_info = error_info_from_event_response(
-                    getattr(upstream, "chatmock_source", "upstream"),
-                    "stream",
-                    evt.get("response"),
-                )
-                error_message = error_info.get("raw_message") or "response.failed"
-            elif kind == "response.completed":
-                completed_ok = True
-                break
-    finally:
-        if completed_ok and hasattr(upstream, "mark_success"):
-            try:
-                upstream.mark_success()
-            except Exception:
-                pass
-        elif error_message and hasattr(upstream, "mark_failure"):
-            try:
-                upstream.mark_failure(error_message)
-            except Exception:
-                pass
-        upstream.close()
-
-    if error_message:
-        if error_info is None:
-            error_info = build_error_info(
-                source=getattr(upstream, "chatmock_source", "upstream"),
-                phase="stream",
-                raw_status=int(getattr(upstream, "status_code", 502) or 502),
-                raw_message=error_message,
-                raw_body={"message": error_message},
+    if not isinstance(nonstream_result, dict) or not nonstream_result.get("ok"):
+        return build_openai_error_response(
+            last_error_info
+            or build_error_info(
+                source="chatcore",
+                phase="nonstream",
+                raw_status=502,
+                raw_message="No candidate succeeded",
+                raw_body={"message": "No candidate succeeded"},
             )
-        return build_openai_error_response(error_info)
+        )
 
-    if tool_calls:
-        message = {"role": "assistant", "content": None, "tool_calls": tool_calls}
-    else:
-        message = {"role": "assistant", "content": full_text if full_text else None}
-        message = apply_reasoning_to_message(message, reasoning_summary_text, reasoning_full_text, reasoning_compat)
+    response_id = nonstream_result.get("response_id") or "chatcmpl"
+    message = nonstream_result.get("message") or {"role": "assistant", "content": None}
+    usage_obj = nonstream_result.get("usage_obj")
+    observed_service_tier = nonstream_result.get("observed_service_tier")
     completion = {
         "id": response_id or "chatcmpl",
         "object": "chat.completion",
@@ -645,6 +810,7 @@ def completions() -> Response:
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     created = int(time.time())
+    nonstream_result: Dict[str, Any] | None = None
     for attempt_index in range(attempt_limit):
         upstream, error_resp = start_upstream_request(
             model,
@@ -673,6 +839,29 @@ def completions() -> Response:
                     pass
                 continue
             return build_openai_error_response(error_info)
+        if not stream_req:
+            nonstream_result = _consume_text_completion_nonstream(
+                upstream,
+                requested_model=requested_model,
+                model=model,
+                created=created,
+            )
+            if not nonstream_result.get("ok"):
+                error_info = nonstream_result.get("error_info")
+                if isinstance(error_info, dict):
+                    last_error_info = error_info
+                if _should_retry_nonstream_candidate(error_info) and attempt_index + 1 < attempt_limit:
+                    upstream = None
+                    nonstream_result = None
+                    continue
+                return build_openai_error_response(error_info or build_error_info(
+                    source="chatcore",
+                    phase="nonstream",
+                    raw_status=502,
+                    raw_message="Unknown upstream failure",
+                    raw_body={"message": "Unknown upstream failure"},
+                ))
+            break
         break
 
     if upstream is None:
@@ -754,78 +943,22 @@ def completions() -> Response:
             resp.headers.setdefault(k, v)
         return resp
 
-    full_text = ""
-    response_id = "cmpl"
-    usage_obj: Dict[str, int] | None = None
-    observed_service_tier: str | None = None
-    completed_ok = False
-    error_message: str | None = None
-    error_info: Dict[str, Any] | None = None
-    def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-        try:
-            usage = (evt.get("response") or {}).get("usage")
-            if not isinstance(usage, dict):
-                return None
-            pt = int(usage.get("input_tokens") or 0)
-            ct = int(usage.get("output_tokens") or 0)
-            tt = int(usage.get("total_tokens") or (pt + ct))
-            return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-        except Exception:
-            return None
-    try:
-        for raw_line in upstream.iter_lines(decode_unicode=False):
-            if not raw_line:
-                continue
-            line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, (bytes, bytearray)) else raw_line
-            if not line.startswith("data: "):
-                continue
-            data = line[len("data: "):].strip()
-            if not data or data == "[DONE]":
-                if data == "[DONE]":
-                    break
-                continue
-            try:
-                evt = json.loads(data)
-            except Exception:
-                continue
-            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                response_id = evt["response"].get("id") or response_id
-            if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("service_tier"), str):
-                observed_service_tier = evt["response"].get("service_tier") or observed_service_tier
-            mu = _extract_usage(evt)
-            if mu:
-                usage_obj = mu
-            kind = evt.get("type")
-            if kind == "response.output_text.delta":
-                full_text += evt.get("delta") or ""
-            elif kind == "response.failed":
-                error_info = error_info_from_event_response(
-                    getattr(upstream, "chatmock_source", "upstream"),
-                    "stream",
-                    evt.get("response"),
-                )
-                error_message = error_info.get("raw_message") or "response.failed"
-            elif kind == "response.completed":
-                completed_ok = True
-                break
-    finally:
-        if completed_ok and hasattr(upstream, "mark_success"):
-            try:
-                upstream.mark_success()
-            except Exception:
-                pass
-        upstream.close()
-
-    if error_message:
-        if error_info is None:
-            error_info = build_error_info(
-                source=getattr(upstream, "chatmock_source", "upstream"),
-                phase="stream",
-                raw_status=int(getattr(upstream, "status_code", 502) or 502),
-                raw_message=error_message,
-                raw_body={"message": error_message},
+    if not isinstance(nonstream_result, dict) or not nonstream_result.get("ok"):
+        return build_openai_error_response(
+            last_error_info
+            or build_error_info(
+                source="chatcore",
+                phase="nonstream",
+                raw_status=502,
+                raw_message="No candidate succeeded",
+                raw_body={"message": "No candidate succeeded"},
             )
-        return build_openai_error_response(error_info)
+        )
+
+    full_text = nonstream_result.get("full_text") or ""
+    response_id = nonstream_result.get("response_id") or "cmpl"
+    usage_obj = nonstream_result.get("usage_obj")
+    observed_service_tier = nonstream_result.get("observed_service_tier")
 
     completion = {
         "id": response_id or "cmpl",
