@@ -623,6 +623,7 @@ def dashboard_config():
         "CHATMOCK_MANAGE_CODEX_APP_SERVER": os.getenv("CHATMOCK_MANAGE_CODEX_APP_SERVER", ""),
         "CHATGPT_LOCAL_UPSTREAM": os.getenv("CHATGPT_LOCAL_UPSTREAM", ""),
         "CHATGPT_LOCAL_CODEX_APP_SERVER_URL": os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL", ""),
+        "CHATMOCK_EXPOSE_SERVICE_TIER": os.getenv("CHATMOCK_EXPOSE_SERVICE_TIER", "1"),
         "CODEX_HOME": os.getenv("CODEX_HOME", ""),
         "service": service,
         "configRead": runtime_config,

@@ -33,7 +33,7 @@ def create_app(
 ) -> Flask:
     app = Flask(__name__)
     expose_service_tier = (
-        os.getenv("CHATMOCK_EXPOSE_SERVICE_TIER") or ""
+        os.getenv("CHATMOCK_EXPOSE_SERVICE_TIER") or "1"
     ).strip().lower() in ("1", "true", "yes", "on")
     expose_thread_ids = (
         os.getenv("CHATMOCK_EXPOSE_THREAD_IDS") or ""
