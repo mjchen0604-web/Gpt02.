@@ -356,11 +356,13 @@ def main() -> None:
     )
     p_serve.add_argument(
         "--upstream",
-        choices=["codex-app-server"],
+        choices=["auto", "chatgpt-backend", "codex-app-server"],
         default=(os.getenv("CHATGPT_LOCAL_UPSTREAM") or UPSTREAM_MODE_DEFAULT).strip().lower(),
         help=(
             "Select the upstream provider. "
-            "'codex-app-server' uses a local Codex app-server WebSocket."
+            "'auto' sends normal requests to chatgpt-backend and fast/codex requests to codex-app-server. "
+            "'chatgpt-backend' forces the backend path. "
+            "'codex-app-server' forces the local Codex app-server WebSocket."
         ),
     )
     p_serve.add_argument(

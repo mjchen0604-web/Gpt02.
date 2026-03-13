@@ -25,7 +25,7 @@ from .upstream_errors import (
     normalized_error_payload,
     should_retry_next_candidate,
 )
-from .upstream import normalize_model_name, start_upstream_request
+from .upstream import normalize_model_name, resolve_upstream_mode, start_upstream_request
 from .thread_sessions import build_thread_session_state
 from .utils import (
     RetryableStreamError,
@@ -78,8 +78,12 @@ def _instructions_for_model(model: str) -> str:
     return base
 
 
-def _upstream_attempt_limit(is_stream: bool) -> int:
+def _upstream_attempt_limit(is_stream: bool, model: str | None = None, service_tier: str | None = None) -> int:
     if is_stream:
+        return 1
+    configured_mode = str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower()
+    selected_mode = resolve_upstream_mode(configured_mode, model or "", service_tier)
+    if selected_mode != "codex-app-server":
         return 1
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
     if manager is not None and hasattr(manager, "get_request_candidates"):
@@ -542,7 +546,7 @@ def chat_completions() -> Response:
         allowed_efforts=allowed_efforts_for_model(model),
     )
 
-    attempt_limit = _upstream_attempt_limit(is_stream)
+    attempt_limit = _upstream_attempt_limit(is_stream, model, service_tier)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     created = int(time.time())
@@ -807,7 +811,7 @@ def completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
-    attempt_limit = _upstream_attempt_limit(stream_req)
+    attempt_limit = _upstream_attempt_limit(stream_req, model, service_tier)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     created = int(time.time())

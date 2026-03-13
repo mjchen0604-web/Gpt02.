@@ -545,6 +545,125 @@ def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:
     return access_token, account_id
 
 
+def _candidate_from_auth_obj(
+    auth_obj: Dict[str, Any],
+    *,
+    label: str,
+    ensure_fresh: bool,
+) -> tuple[Dict[str, str] | None, bool]:
+    access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
+    changed = False
+    refreshed = False
+
+    if ensure_fresh and isinstance(refresh_token, str) and refresh_token and CLIENT_ID_DEFAULT:
+        needs_refresh = _should_refresh_access_token(access_token, last_refresh)
+        if needs_refresh or not (isinstance(access_token, str) and access_token):
+            updated = _refresh_chatgpt_tokens(refresh_token, CLIENT_ID_DEFAULT)
+            if updated:
+                access_token = updated.get("access_token") or access_token
+                id_token = updated.get("id_token") or id_token
+                refresh_token = updated.get("refresh_token") or refresh_token
+                account_id = updated.get("account_id") or account_id
+                refreshed = True
+                changed = True
+
+    if not isinstance(account_id, str) or not account_id:
+        derived = _derive_account_id(id_token)
+        if isinstance(derived, str) and derived:
+            account_id = derived
+            changed = True
+
+    if changed:
+        tokens = auth_obj.get("tokens") if isinstance(auth_obj.get("tokens"), dict) else {}
+        updated_tokens = dict(tokens) if isinstance(tokens, dict) else {}
+        if isinstance(access_token, str) and access_token:
+            updated_tokens["access_token"] = access_token
+        if isinstance(id_token, str) and id_token:
+            updated_tokens["id_token"] = id_token
+        if isinstance(refresh_token, str) and refresh_token:
+            updated_tokens["refresh_token"] = refresh_token
+        if isinstance(account_id, str) and account_id:
+            updated_tokens["account_id"] = account_id
+        auth_obj["tokens"] = updated_tokens
+        if refreshed:
+            auth_obj["last_refresh"] = _now_iso8601()
+
+    if not (isinstance(access_token, str) and access_token):
+        return None, changed
+    if not (isinstance(account_id, str) and account_id):
+        return None, changed
+    return {
+        "label": label,
+        "access_token": access_token,
+        "account_id": account_id,
+    }, changed
+
+
+def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    paths = _parse_auth_files_env()
+    for idx, path in enumerate(paths):
+        auth_obj = _read_json_file(path)
+        if not isinstance(auth_obj, dict):
+            eprint(f"WARNING: skipped invalid auth file: {path}")
+            continue
+        dirname = os.path.basename(os.path.dirname(path))
+        filename = os.path.basename(path)
+        label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
+        candidate, changed = _candidate_from_auth_obj(auth_obj, label=label, ensure_fresh=ensure_fresh)
+        if changed:
+            _write_json_file(path, auth_obj)
+        if candidate is not None:
+            out.append(candidate)
+    return out
+
+
+def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+    path = _find_auth_file_path("auth_pool.json")
+    if not path:
+        return []
+    raw_pool = _read_raw_json_file(path)
+    if not isinstance(raw_pool, (dict, list)):
+        return []
+    accounts = _extract_pool_accounts(raw_pool)
+    if not accounts:
+        return []
+
+    changed = False
+    out: List[Dict[str, str]] = []
+    for idx, account_obj in enumerate(accounts):
+        label = ""
+        for key in ("name", "alias", "label"):
+            value = account_obj.get(key)
+            if isinstance(value, str) and value.strip():
+                label = value.strip()
+                break
+        if not label:
+            label = f"pool-{idx + 1}"
+        candidate, account_changed = _candidate_from_auth_obj(account_obj, label=label, ensure_fresh=ensure_fresh)
+        changed = changed or account_changed
+        if candidate is not None:
+            out.append(candidate)
+
+    if changed:
+        _write_json_file(path, raw_pool)
+    return out
+
+
+def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, str]]:
+    candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
+    if not candidates:
+        candidates = _load_auth_candidates_from_pool_file(ensure_fresh=ensure_fresh)
+    if not candidates:
+        access_token, account_id, id_token = load_chatgpt_tokens(ensure_fresh=ensure_fresh)
+        if not account_id:
+            account_id = _derive_account_id(id_token)
+        if isinstance(access_token, str) and access_token and isinstance(account_id, str) and account_id:
+            candidates = [{"label": "default", "access_token": access_token, "account_id": account_id}]
+    candidates = _apply_account_cooldown(candidates)
+    return _ordered_candidates_by_strategy(candidates)
+
+
 def _ordered_candidates_round_robin(candidates: List[Dict[str, str]]) -> List[Dict[str, str]]:
     if len(candidates) <= 1:
         return candidates

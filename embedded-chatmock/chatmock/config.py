@@ -9,7 +9,8 @@ CLIENT_ID_DEFAULT = os.getenv("CHATGPT_LOCAL_CLIENT_ID") or "app_EMoamEEZ73f0CkX
 OAUTH_ISSUER_DEFAULT = os.getenv("CHATGPT_LOCAL_ISSUER") or "https://auth.openai.com"
 OAUTH_TOKEN_URL = f"{OAUTH_ISSUER_DEFAULT}/oauth/token"
 
-UPSTREAM_MODE_DEFAULT = (os.getenv("CHATGPT_LOCAL_UPSTREAM") or "codex-app-server").strip().lower()
+CHATGPT_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
+UPSTREAM_MODE_DEFAULT = (os.getenv("CHATGPT_LOCAL_UPSTREAM") or "auto").strip().lower()
 CODEX_APP_SERVER_URL_DEFAULT = (os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL") or "ws://127.0.0.1:8787").strip()
 
 

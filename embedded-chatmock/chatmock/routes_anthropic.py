@@ -23,7 +23,7 @@ from .upstream_errors import (
     error_info_from_http_response,
     should_retry_next_candidate,
 )
-from .upstream import normalize_model_name, start_upstream_request
+from .upstream import normalize_model_name, resolve_upstream_mode, start_upstream_request
 
 
 anthropic_bp = Blueprint("anthropic", __name__)
@@ -48,8 +48,12 @@ def _instructions_for_model(model: str) -> str:
     return base
 
 
-def _upstream_attempt_limit(is_stream: bool) -> int:
+def _upstream_attempt_limit(is_stream: bool, model: str | None = None, service_tier: str | None = None) -> int:
     if is_stream:
+        return 1
+    configured_mode = str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower()
+    selected_mode = resolve_upstream_mode(configured_mode, model or "", service_tier)
+    if selected_mode != "codex-app-server":
         return 1
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
     if manager is not None and hasattr(manager, "get_request_candidates"):
@@ -569,7 +573,7 @@ def messages() -> Response:
     model_out = requested_model or model
     is_stream = bool(payload.get("stream"))
     expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
-    attempt_limit = _upstream_attempt_limit(is_stream)
+    attempt_limit = _upstream_attempt_limit(is_stream, model, service_tier)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
     for attempt_index in range(attempt_limit):
