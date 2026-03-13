@@ -208,6 +208,7 @@ class CodexAppServerManager:
         app_server_url: str,
         *,
         codex_home: str | Path | None = None,
+        source_auth_path: str | Path | None = None,
         label: str = "default",
         managed: bool | None = None,
         autostart: bool | None = None,
@@ -218,6 +219,9 @@ class CodexAppServerManager:
         self._url = app_server_url.strip() or "ws://127.0.0.1:8787"
         self._host, self._port = _parse_ws_endpoint(self._url)
         self._codex_home = Path(codex_home).expanduser() if codex_home is not None else _default_codex_home()
+        self._source_auth_path = (
+            Path(source_auth_path).expanduser() if source_auth_path is not None else (self._codex_home / "auth.json")
+        )
         self._binary = (binary or os.getenv("CODEX_BIN") or "codex").strip() or "codex"
         self._flags = (flags or os.getenv("CODEX_APP_SERVER_FLAGS") or "--enable fast_mode").strip()
         self._managed = _env_flag("CHATMOCK_MANAGE_CODEX_APP_SERVER", default=False) if managed is None else bool(managed)
@@ -247,6 +251,10 @@ class CodexAppServerManager:
     @property
     def auth_path(self) -> Path:
         return self._codex_home / "auth.json"
+
+    @property
+    def source_auth_path(self) -> Path:
+        return self._source_auth_path
 
     @property
     def config_path(self) -> Path:
@@ -296,6 +304,7 @@ class CodexAppServerManager:
                 "lastError": self._last_error,
                 "lastExitCode": self._last_exit_code,
                 "authPath": str(self.auth_path),
+                "sourceAuthPath": str(self.source_auth_path),
                 "configPath": str(self.config_path),
                 "authPresent": self.has_auth(),
             }
@@ -594,6 +603,7 @@ class CodexAppServerPoolManager:
                     self._instances[label] = CodexAppServerManager(
                         url,
                         codex_home=codex_home,
+                        source_auth_path=auth_path,
                         label=label,
                         managed=self._managed,
                         autostart=self._autostart,
@@ -833,7 +843,7 @@ class CodexAppServerPoolManager:
 
     def remove_auth_for_label(self, label: str, *, reason: str = "") -> bool:
         instance = self._instances.get(label)
-        auth_path = str(instance.auth_path) if instance is not None else ""
+        auth_path = str(instance.source_auth_path) if instance is not None else ""
         if instance is not None:
             try:
                 instance.stop()
