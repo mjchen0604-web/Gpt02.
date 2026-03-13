@@ -712,6 +712,27 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
     return out
 
 
+def _dedupe_candidates_by_account_id(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen_account_ids: set[str] = set()
+    seen_labels: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        label = str(candidate.get("label") or "").strip()
+        account_id = str(candidate.get("account_id") or "").strip()
+        dedupe_key = account_id or label
+        if not dedupe_key:
+            continue
+        if dedupe_key in seen_account_ids or label in seen_labels:
+            continue
+        seen_account_ids.add(dedupe_key)
+        if label:
+            seen_labels.add(label)
+        deduped.append(candidate)
+    return deduped
+
+
 def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dict[str, Any]]:
     candidates = _load_auth_candidates_from_auth_files(ensure_fresh=ensure_fresh)
     if not candidates and not _has_explicit_auth_files_config():
@@ -729,6 +750,7 @@ def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dic
                 "source_path": _find_auth_file_path("auth.json") or "auth.json",
                 "source_index": None,
             }]
+    candidates = _dedupe_candidates_by_account_id(candidates)
     candidates = _apply_account_cooldown(candidates)
     return _ordered_candidates_by_strategy(candidates)
 

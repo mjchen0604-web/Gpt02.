@@ -527,10 +527,15 @@ class CodexAppServerPoolManager:
         paths = auth_files if auth_files is not None else _parse_auth_files_env()
         entries: list[dict[str, Any]] = []
         seen_labels: set[str] = set()
+        seen_account_ids: set[str] = set()
 
         for idx, raw in enumerate(paths):
             auth_path = Path(raw).expanduser()
             if not auth_path.exists():
+                continue
+            payload = _read_auth_payload(auth_path)
+            account_id = _account_id_from_payload(payload)
+            if account_id and account_id in seen_account_ids:
                 continue
             label = _instance_label_for_auth_path(auth_path, fallback=f"acc{idx + 1:02d}")
             base_label = label
@@ -539,6 +544,8 @@ class CodexAppServerPoolManager:
                 label = f"{base_label}-{suffix}"
                 suffix += 1
             seen_labels.add(label)
+            if account_id:
+                seen_account_ids.add(account_id)
             entries.append(
                 {
                     "label": label,
