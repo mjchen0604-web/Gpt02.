@@ -24,6 +24,7 @@ from .utils import (
     get_request_retry_limit,
     get_retryable_statuses,
     handle_chatgpt_candidate_failure,
+    is_auth_candidate_blocked,
     mark_chatgpt_auth_result,
 )
 
@@ -160,6 +161,8 @@ def _start_codex_app_server_request(
     for candidate in candidates:
         candidate_url = str(candidate.get("url") or "").strip() or app_server_url
         candidate_label = str(candidate.get("label") or "default").strip() or "default"
+        if is_auth_candidate_blocked(candidate):
+            continue
         if verbose:
             print(f"codex app-server candidate -> {candidate_label} @ {candidate_url}")
         try:
@@ -318,6 +321,8 @@ def _start_chatgpt_backend_request(
             access_token = candidate.get("access_token")
             account_id = candidate.get("account_id")
             label = candidate.get("label") or f"candidate-{idx + 1}"
+            if is_auth_candidate_blocked(candidate):
+                continue
             if not access_token or not account_id:
                 continue
 
@@ -340,7 +345,7 @@ def _start_chatgpt_backend_request(
                 )
             except requests.RequestException as exc:
                 last_exception = exc
-                mark_chatgpt_auth_result(label, success=False, error_message=str(exc))
+                mark_chatgpt_auth_result(label, success=False, account_id=account_id, error_message=str(exc))
                 if verbose:
                     print(f"Upstream request failed for {label}: {exc}")
                 continue
@@ -364,7 +369,7 @@ def _start_chatgpt_backend_request(
                     continue
                 return upstream, None
 
-            mark_chatgpt_auth_result(label, success=True, status_code=status)
+            mark_chatgpt_auth_result(label, success=True, status_code=status, account_id=account_id)
             return upstream, None
 
     if last_upstream is not None:

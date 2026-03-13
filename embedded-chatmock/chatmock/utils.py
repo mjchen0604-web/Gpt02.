@@ -24,6 +24,8 @@ _AUTH_POOL_STATE: Dict[str, Dict[str, Any]] = {}
 _INVALID_AUTH_LOCK = threading.RLock()
 _INVALID_AUTH_LABELS: set[str] = set()
 _INVALID_AUTH_ACCOUNT_IDS: set[str] = set()
+_AUTH_ACCOUNT_COOLDOWN_LOCK = threading.RLock()
+_AUTH_ACCOUNT_COOLDOWN_UNTIL: Dict[str, float] = {}
 
 
 def eprint(*args, **kwargs) -> None:
@@ -527,6 +529,41 @@ def _is_invalid_auth_candidate(*, label: str = "", account_id: str = "") -> bool
     return False
 
 
+def _set_account_cooldown(*, account_id: str = "", until_ts: float = 0.0) -> None:
+    if not isinstance(account_id, str) or not account_id.strip():
+        return
+    with _AUTH_ACCOUNT_COOLDOWN_LOCK:
+        if until_ts > 0:
+            _AUTH_ACCOUNT_COOLDOWN_UNTIL[account_id.strip()] = float(until_ts)
+        else:
+            _AUTH_ACCOUNT_COOLDOWN_UNTIL.pop(account_id.strip(), None)
+
+
+def _get_account_cooldown(account_id: str) -> float:
+    if not isinstance(account_id, str) or not account_id.strip():
+        return 0.0
+    with _AUTH_ACCOUNT_COOLDOWN_LOCK:
+        until_ts = float(_AUTH_ACCOUNT_COOLDOWN_UNTIL.get(account_id.strip()) or 0.0)
+    now = time.time()
+    if until_ts <= now:
+        _set_account_cooldown(account_id=account_id, until_ts=0.0)
+        return 0.0
+    return until_ts
+
+
+def is_auth_candidate_blocked(candidate: Dict[str, Any]) -> bool:
+    if not isinstance(candidate, dict):
+        return True
+    label = str(candidate.get("label") or "").strip()
+    account_id = str(candidate.get("account_id") or "").strip()
+    if _is_invalid_auth_candidate(label=label, account_id=account_id):
+        return True
+    cooldown_until = _get_account_cooldown(account_id)
+    if cooldown_until > time.time():
+        return True
+    return False
+
+
 def _label_for_auth_file_path(path: str) -> str:
     dirname = os.path.basename(os.path.dirname(path))
     filename = os.path.basename(path)
@@ -906,6 +943,7 @@ def mark_chatgpt_auth_result(
     *,
     success: bool,
     status_code: int | None = None,
+    account_id: str | None = None,
     error_message: str | None = None,
     classification: str | None = None,
     cooldown_seconds: int | None = None,
@@ -920,6 +958,7 @@ def mark_chatgpt_auth_result(
         state = dict(_AUTH_POOL_STATE.get(label) or {})
         if success:
             _clear_invalid_auth_candidate(label=label)
+            _set_account_cooldown(account_id=account_id or "", until_ts=0.0)
             _set_auth_pool_state(
                 label,
                 status="ready",
@@ -971,11 +1010,14 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
     raw_code = info.get("raw_code") if isinstance(info.get("raw_code"), str) else None
     raw_message = info.get("raw_message") if isinstance(info.get("raw_message"), str) else None
 
-    if classification == "insufficient_balance":
+    if classification in ("insufficient_balance", "rate_limited"):
+        cooldown_until = time.time() + float(5 * 60 * 60)
+        _set_account_cooldown(account_id=account_id, until_ts=cooldown_until)
         mark_chatgpt_auth_result(
             label,
             success=False,
             status_code=raw_status,
+            account_id=account_id,
             error_message=raw_message,
             classification=classification,
             cooldown_seconds=5 * 60 * 60,
@@ -993,6 +1035,7 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
         label,
         success=False,
         status_code=raw_status,
+        account_id=account_id,
         error_message=raw_message,
         classification=classification,
         raw_code=raw_code,

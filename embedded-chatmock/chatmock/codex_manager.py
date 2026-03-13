@@ -882,12 +882,20 @@ class CodexAppServerPoolManager:
             instance = self._instances.get(label)
             if instance is None:
                 continue
-            out.append({"label": label, "url": instance.url, "auth_path": str(instance.auth_path)})
+            payload = _read_auth_payload(instance.source_auth_path)
+            out.append({
+                "label": label,
+                "url": instance.url,
+                "auth_path": str(instance.auth_path),
+                "account_id": _account_id_from_payload(payload),
+            })
         return out
 
     def remove_auth_for_label(self, label: str, *, reason: str = "") -> bool:
         instance = self._instances.get(label)
         auth_path = str(instance.source_auth_path) if instance is not None else ""
+        payload = _read_auth_payload(Path(auth_path)) if auth_path else None
+        account_id = _account_id_from_payload(payload)
         if instance is not None:
             try:
                 instance.stop()
@@ -899,6 +907,7 @@ class CodexAppServerPoolManager:
                 "source_kind": "auth_file",
                 "source_path": auth_path,
                 "source_index": None,
+                "account_id": account_id,
             },
             reason=reason,
         )
@@ -924,6 +933,9 @@ class CodexAppServerPoolManager:
         now = time.time()
         max_retry_interval = max(5, int(os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "5"))
         classification = classify_error(error_info or {"raw_status": status_code, "raw_message": error_message})
+        instance = self._instances.get(label)
+        payload = _read_auth_payload(instance.source_auth_path) if instance is not None else None
+        account_id = _account_id_from_payload(payload)
         with self._lock:
             state = dict(self._request_state.get(label) or {})
             state["requests_total"] = int(state.get("requests_total") or 0) + 1
@@ -938,7 +950,7 @@ class CodexAppServerPoolManager:
                 state["status"] = "ready"
                 state["last_classification"] = "ready"
                 self._request_state[label] = state
-                mark_chatgpt_auth_result(label, success=True, status_code=status_code)
+                mark_chatgpt_auth_result(label, success=True, status_code=status_code, account_id=account_id)
                 self._append_log(f"request result: {label} success")
                 return
             if classification == "insufficient_balance":
@@ -957,6 +969,7 @@ class CodexAppServerPoolManager:
                     label,
                     success=False,
                     status_code=status_code,
+                    account_id=account_id,
                     error_message=error_message,
                     classification=classification,
                     cooldown_seconds=5 * 60 * 60,
@@ -995,6 +1008,7 @@ class CodexAppServerPoolManager:
                     label,
                     success=False,
                     status_code=status_code,
+                    account_id=account_id,
                     error_message=error_message,
                     classification=classification,
                     raw_code=(error_info or {}).get("raw_code"),
