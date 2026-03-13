@@ -724,6 +724,7 @@ def chat_completions() -> Response:
     message = nonstream_result.get("message") or {"role": "assistant", "content": None}
     usage_obj = nonstream_result.get("usage_obj")
     observed_service_tier = nonstream_result.get("observed_service_tier")
+    tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
     completion = {
         "id": response_id or "chatcmpl",
         "object": "chat.completion",
