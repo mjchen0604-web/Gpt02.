@@ -99,8 +99,8 @@ def run_probe(base_url: str, probe_name: str, body: dict[str, object]) -> dict[s
     result: dict[str, object] = {
         "probe": probe_name,
         "status": response.status_code,
-        "requested": response.headers.get("X-ChatMock-Service-Tier-Requested"),
-        "observed": response.headers.get("X-ChatMock-Service-Tier-Observed"),
+        "requested": response.headers.get("IDIIfy-Service-Tier-Requested"),
+        "observed": response.headers.get("IDIIfy-Service-Tier-Observed"),
         "service_tier": parsed.get("service_tier") if isinstance(parsed, dict) else None,
         "body": parsed,
     }

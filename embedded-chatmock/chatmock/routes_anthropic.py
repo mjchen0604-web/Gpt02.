@@ -627,7 +627,7 @@ def messages() -> Response:
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
         if expose_service_tier and service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -735,9 +735,9 @@ def messages() -> Response:
 
     resp = make_response(jsonify(message_obj), upstream.status_code)
     if expose_service_tier and service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+        resp.headers["IDIIfy-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp

@@ -693,7 +693,7 @@ def ollama_chat() -> Response:
             mimetype="application/x-ndjson",
         )
         if expose_service_tier and service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -807,9 +807,9 @@ def ollama_chat() -> Response:
         _log_json("OUT POST /api/chat", out_json)
     resp = make_response(jsonify(out_json), 200)
     if expose_service_tier and service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+        resp.headers["IDIIfy-Service-Tier-Observed"] = observed_service_tier
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp

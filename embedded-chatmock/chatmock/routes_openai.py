@@ -804,12 +804,12 @@ def chat_completions() -> Response:
             upstream=upstream,
         )
         if expose_service_tier and service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
         if isinstance(getattr(upstream, "_observed_service_tier", None), str) and str(getattr(upstream, "_observed_service_tier")).strip().lower() == "fast":
             resp.headers["IDIIfy-Priority-Equivalent"] = "true"
         if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-            resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
-            resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
+            resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
+            resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -865,14 +865,14 @@ def chat_completions() -> Response:
         extra={"response_id": response_id},
     )
     if expose_service_tier and service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+        resp.headers["IDIIfy-Service-Tier-Observed"] = observed_service_tier
     if isinstance(observed_service_tier, str) and observed_service_tier.strip().lower() == "fast":
         resp.headers["IDIIfy-Priority-Equivalent"] = "true"
     if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
-        resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
+        resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
+        resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -1116,12 +1116,12 @@ def completions() -> Response:
             upstream=upstream,
         )
         if expose_service_tier and service_tier:
-            resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
         if isinstance(getattr(upstream, "_observed_service_tier", None), str) and str(getattr(upstream, "_observed_service_tier")).strip().lower() == "fast":
             resp.headers["IDIIfy-Priority-Equivalent"] = "true"
         if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-            resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
-            resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
+            resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
+            resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -1173,14 +1173,14 @@ def completions() -> Response:
         extra={"response_id": response_id},
     )
     if expose_service_tier and service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Requested"] = service_tier
+        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
-        resp.headers["X-ChatMock-Service-Tier-Observed"] = observed_service_tier
+        resp.headers["IDIIfy-Service-Tier-Observed"] = observed_service_tier
     if isinstance(observed_service_tier, str) and observed_service_tier.strip().lower() == "fast":
         resp.headers["IDIIfy-Priority-Equivalent"] = "true"
     if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        resp.headers["X-ChatMock-Thread-Id"] = upstream.chatmock_thread_id
-        resp.headers["X-ChatMock-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
+        resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
+        resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
