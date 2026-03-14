@@ -14,7 +14,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from .config import CLIENT_ID_DEFAULT, OAUTH_TOKEN_URL
-from .upstream_errors import classify_error, error_info_from_event_response, normalized_error_payload, should_retry_next_candidate
+from .upstream_errors import (
+    classify_error,
+    error_info_from_event_response,
+    extract_retry_after_unlock_ts,
+    normalized_error_payload,
+    should_retry_next_candidate,
+)
 
 
 _AUTH_POOL_RR_LOCK = threading.Lock()
@@ -26,6 +32,8 @@ _INVALID_AUTH_LABELS: set[str] = set()
 _INVALID_AUTH_ACCOUNT_IDS: set[str] = set()
 _AUTH_ACCOUNT_COOLDOWN_LOCK = threading.RLock()
 _AUTH_ACCOUNT_COOLDOWN_UNTIL: Dict[str, float] = {}
+_AUTH_INFLIGHT_LOCK = threading.RLock()
+_AUTH_INFLIGHT_COUNTS: Dict[str, int] = {}
 
 
 def eprint(*args, **kwargs) -> None:
@@ -36,6 +44,51 @@ class RetryableStreamError(RuntimeError):
     def __init__(self, error_info: Dict[str, Any]) -> None:
         self.error_info = error_info
         super().__init__(str((error_info or {}).get("raw_message") or "retryable stream failure"))
+
+
+class ManagedAuthUpstream:
+    def __init__(self, upstream: Any, candidate: Dict[str, Any]) -> None:
+        self._upstream = upstream
+        self._candidate = dict(candidate or {})
+        self._released = False
+        self._marked = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._upstream, name)
+
+    def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        _release_auth_candidate_slot(self._candidate)
+
+    def _mark_success(self) -> None:
+        if self._marked:
+            return
+        self._marked = True
+        mark_chatgpt_auth_result(
+            str(self._candidate.get("label") or "").strip(),
+            success=True,
+            status_code=int(getattr(self._upstream, "status_code", 200) or 200),
+            account_id=str(self._candidate.get("account_id") or "").strip(),
+        )
+
+    def close(self) -> None:
+        try:
+            if not self._marked:
+                self._mark_success()
+        finally:
+            self._release()
+            return self._upstream.close()
+
+    def iter_lines(self, decode_unicode: bool = False):
+        try:
+            for raw in self._upstream.iter_lines(decode_unicode=decode_unicode):
+                yield raw
+            if not self._marked:
+                self._mark_success()
+        finally:
+            self._release()
 
 
 def get_home_dir() -> str:
@@ -868,6 +921,109 @@ def _ordered_candidates_by_strategy(candidates: List[Dict[str, str]]) -> List[Di
     return candidates
 
 
+def get_max_inflight_per_account() -> int:
+    raw = (os.getenv("CHATGPT_LOCAL_MAX_INFLIGHT_PER_ACCOUNT") or "3").strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = 3
+    return max(1, min(32, value))
+
+
+def _candidate_busy_key(candidate: Dict[str, Any]) -> str:
+    if not isinstance(candidate, dict):
+        return ""
+    account_id = str(candidate.get("account_id") or "").strip()
+    if account_id:
+        return account_id
+    return str(candidate.get("label") or "").strip()
+
+
+def _get_inflight_count_for_key(key: str) -> int:
+    if not key:
+        return 0
+    with _AUTH_INFLIGHT_LOCK:
+        return int(_AUTH_INFLIGHT_COUNTS.get(key) or 0)
+
+
+def _reserve_auth_candidate_slot(candidate: Dict[str, Any]) -> None:
+    key = _candidate_busy_key(candidate)
+    if not key:
+        return
+    label = str(candidate.get("label") or "").strip()
+    with _AUTH_INFLIGHT_LOCK:
+        inflight = int(_AUTH_INFLIGHT_COUNTS.get(key) or 0) + 1
+        _AUTH_INFLIGHT_COUNTS[key] = inflight
+    if label:
+        with _AUTH_POOL_STATE_LOCK:
+            state = dict(_AUTH_POOL_STATE.get(label) or {})
+            state["inflight"] = inflight
+            _AUTH_POOL_STATE[label] = state
+
+
+def _release_auth_candidate_slot(candidate: Dict[str, Any]) -> None:
+    key = _candidate_busy_key(candidate)
+    if not key:
+        return
+    label = str(candidate.get("label") or "").strip()
+    with _AUTH_INFLIGHT_LOCK:
+        current = int(_AUTH_INFLIGHT_COUNTS.get(key) or 0)
+        if current <= 1:
+            _AUTH_INFLIGHT_COUNTS.pop(key, None)
+            inflight = 0
+        else:
+            inflight = current - 1
+            _AUTH_INFLIGHT_COUNTS[key] = inflight
+    if label:
+        with _AUTH_POOL_STATE_LOCK:
+            state = dict(_AUTH_POOL_STATE.get(label) or {})
+            state["inflight"] = inflight
+            _AUTH_POOL_STATE[label] = state
+
+
+def _apply_account_capacity(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if len(candidates) <= 1:
+        return candidates
+    limit = get_max_inflight_per_account()
+    preferred = [candidate for candidate in candidates if _get_inflight_count_for_key(_candidate_busy_key(candidate)) < limit]
+    if preferred:
+        return preferred
+    return candidates
+
+
+def claim_chatgpt_auth_candidate(
+    *,
+    ensure_fresh: bool = True,
+    excluded_labels: set[str] | None = None,
+) -> Dict[str, Any] | None:
+    excluded = excluded_labels or set()
+    candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=ensure_fresh)
+    candidates = [candidate for candidate in candidates if str(candidate.get("label") or "").strip() not in excluded]
+    if not candidates:
+        return None
+    limit = get_max_inflight_per_account()
+    preferred = []
+    fallback = []
+    for candidate in candidates:
+        if _get_inflight_count_for_key(_candidate_busy_key(candidate)) < limit:
+            preferred.append(candidate)
+        else:
+            fallback.append(candidate)
+    ordered = preferred if preferred else fallback
+    if not ordered:
+        return None
+    with _AUTH_INFLIGHT_LOCK:
+        preferred_now = [
+            candidate
+            for candidate in ordered
+            if _get_inflight_count_for_key(_candidate_busy_key(candidate)) < limit
+        ]
+        selected = preferred_now[0] if preferred_now else ordered[0]
+        selected_copy = dict(selected)
+        _reserve_auth_candidate_slot(selected_copy)
+        return selected_copy
+
+
 def get_request_retry_limit() -> int:
     raw = (os.getenv("CHATGPT_LOCAL_REQUEST_RETRY") or "2").strip()
     try:
@@ -947,6 +1103,7 @@ def mark_chatgpt_auth_result(
     error_message: str | None = None,
     classification: str | None = None,
     cooldown_seconds: int | None = None,
+    cooldown_until_ts: float | None = None,
     raw_code: str | None = None,
     raw_message: str | None = None,
 ) -> None:
@@ -974,25 +1131,43 @@ def mark_chatgpt_auth_result(
 
         failures = int(state.get("failures") or 0) + 1
         category = (classification or "").strip() or "generic_failure"
-        if isinstance(cooldown_seconds, int) and cooldown_seconds > 0:
-            cooldown = cooldown_seconds
-            state_status = "cooldown_insufficient_balance" if category == "insufficient_balance" else "temporary_failure"
+        if isinstance(cooldown_until_ts, (int, float)) and float(cooldown_until_ts) > now:
+            cooldown_until = float(cooldown_until_ts)
+            state_status = (
+                "cooldown_insufficient_balance"
+                if category == "insufficient_balance"
+                else "cooldown_rate_limited"
+                if category == "rate_limited"
+                else "temporary_failure"
+            )
+        elif isinstance(cooldown_seconds, int) and cooldown_seconds > 0:
+            cooldown_until = now + float(cooldown_seconds)
+            state_status = (
+                "cooldown_insufficient_balance"
+                if category == "insufficient_balance"
+                else "cooldown_rate_limited"
+                if category == "rate_limited"
+                else "temporary_failure"
+            )
         elif isinstance(status_code, int) and status_code in (401, 403):
             base = 5
             cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
+            cooldown_until = now + float(cooldown)
             state_status = "temporary_failure"
         elif isinstance(status_code, int) and status_code == 429:
             base = 2
             cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
+            cooldown_until = now + float(cooldown)
             state_status = "temporary_failure"
         else:
             base = 1
             cooldown = min(max_retry_interval, base * (2 ** max(0, failures - 1)))
+            cooldown_until = now + float(cooldown)
             state_status = "temporary_failure"
         _set_auth_pool_state(
             label,
             status=state_status,
-            cooldown_until=now + float(cooldown),
+            cooldown_until=cooldown_until,
             failures=failures,
             last_status=status_code,
             last_error=error_message or "",
@@ -1009,9 +1184,13 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
     raw_status = info.get("raw_status") if isinstance(info.get("raw_status"), int) else None
     raw_code = info.get("raw_code") if isinstance(info.get("raw_code"), str) else None
     raw_message = info.get("raw_message") if isinstance(info.get("raw_message"), str) else None
+    retry_at_until = extract_retry_after_unlock_ts(info)
+    effective_classification = classification
+    if retry_at_until is not None and effective_classification == "generic_failure":
+        effective_classification = "rate_limited"
 
-    if classification in ("insufficient_balance", "rate_limited"):
-        cooldown_until = time.time() + float(5 * 60 * 60)
+    if effective_classification in ("insufficient_balance", "rate_limited"):
+        cooldown_until = float(retry_at_until) if retry_at_until is not None else time.time() + float(5 * 60 * 60)
         _set_account_cooldown(account_id=account_id, until_ts=cooldown_until)
         mark_chatgpt_auth_result(
             label,
@@ -1019,17 +1198,18 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
             status_code=raw_status,
             account_id=account_id,
             error_message=raw_message,
-            classification=classification,
-            cooldown_seconds=5 * 60 * 60,
+            classification=effective_classification,
+            cooldown_seconds=None if retry_at_until is not None else 5 * 60 * 60,
+            cooldown_until_ts=retry_at_until,
             raw_code=raw_code,
             raw_message=raw_message,
         )
-        return classification
+        return effective_classification
 
-    if classification == "account_invalid":
+    if effective_classification == "account_invalid":
         _mark_invalid_auth_candidate(label=label, account_id=account_id)
         remove_chatgpt_auth_candidate(candidate, reason=raw_message or "Account invalid")
-        return classification
+        return effective_classification
 
     mark_chatgpt_auth_result(
         label,
@@ -1037,11 +1217,11 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
         status_code=raw_status,
         account_id=account_id,
         error_message=raw_message,
-        classification=classification,
+        classification=effective_classification,
         raw_code=raw_code,
         raw_message=raw_message,
     )
-    return classification
+    return effective_classification
 
 
 def get_chatgpt_auth_pool_state() -> Dict[str, Dict[str, Any]]:
@@ -1063,6 +1243,12 @@ def _state_for_label(label: str) -> Dict[str, Any]:
     now = time.time()
     cooldown_until = float(state.get("cooldown_until") or 0.0)
     remaining = max(0, int(cooldown_until - now))
+    unlock_at = (
+        datetime.datetime.fromtimestamp(cooldown_until, datetime.timezone.utc).isoformat()
+        if cooldown_until > now
+        else ""
+    )
+    inflight = int(state.get("inflight") or 0)
     return {
         "status": state.get("status") or "ready",
         "failures": int(state.get("failures") or 0),
@@ -1071,7 +1257,10 @@ def _state_for_label(label: str) -> Dict[str, Any]:
         "last_classification": state.get("last_classification") or "",
         "last_raw_code": state.get("last_raw_code") or "",
         "last_raw_message": state.get("last_raw_message") or "",
+        "cooldown_until": cooldown_until,
         "cooldown_remaining": remaining,
+        "unlock_at": unlock_at,
+        "inflight": inflight,
         "updated_at": state.get("updated_at"),
     }
 

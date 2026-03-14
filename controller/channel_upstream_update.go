@@ -517,7 +517,7 @@ func runChannelUpstreamModelUpdateTaskOnce() {
 	for {
 		var channels []*model.Channel
 		query := model.DB.
-			Select("id", "name", "type", "key", "status", "base_url", "models", "settings", "setting", "other", "group", "priority", "weight", "tag", "channel_info", "header_override").
+			Select("id", "name", "type", "key", "status", "base_url", "models", "settings", "setting", "other", "group", "weight", "tag", "channel_info", "header_override").
 			Where("status = ?", common.ChannelStatusEnabled).
 			Order("id asc").
 			Limit(channelUpstreamModelUpdateTaskBatchSize)
@@ -810,7 +810,7 @@ func collectPendingApplyUpstreamModelChanges(settings dto.ChannelOtherSettings) 
 func findEnabledChannelsAfterID(lastID int, batchSize int) ([]*model.Channel, error) {
 	var channels []*model.Channel
 	query := model.DB.
-		Select("id", "name", "type", "key", "status", "base_url", "models", "settings", "setting", "other", "group", "priority", "weight", "tag", "channel_info", "header_override").
+		Select("id", "name", "type", "key", "status", "base_url", "models", "settings", "setting", "other", "group", "weight", "tag", "channel_info", "header_override").
 		Where("status = ?", common.ChannelStatusEnabled).
 		Order("id asc").
 		Limit(batchSize)

@@ -138,7 +138,6 @@ export const useChannelsData = () => {
     STATUS: 'status',
     RESPONSE_TIME: 'response_time',
     BALANCE: 'balance',
-    PRIORITY: 'priority',
     WEIGHT: 'weight',
     OPERATE: 'operate',
   };
@@ -178,7 +177,6 @@ export const useChannelsData = () => {
       [COLUMN_KEYS.STATUS]: true,
       [COLUMN_KEYS.RESPONSE_TIME]: true,
       [COLUMN_KEYS.BALANCE]: true,
-      [COLUMN_KEYS.PRIORITY]: true,
       [COLUMN_KEYS.WEIGHT]: true,
       [COLUMN_KEYS.OPERATE]: true,
     };
@@ -258,21 +256,12 @@ export const useChannelsData = () => {
             group: '',
             used_quota: 0,
             response_time: 0,
-            priority: -1,
             weight: -1,
           };
           tagChannelDates.children = [];
           channelDates.push(tagChannelDates);
         } else {
           tagChannelDates = channelDates.find((item) => item.key === tag);
-        }
-
-        if (tagChannelDates.priority === -1) {
-          tagChannelDates.priority = channels[i].priority;
-        } else {
-          if (tagChannelDates.priority !== channels[i].priority) {
-            tagChannelDates.priority = '';
-          }
         }
 
         if (tagChannelDates.weight === -1) {
@@ -455,11 +444,6 @@ export const useChannelsData = () => {
         data.status = 2;
         res = await API.put('/api/channel/', data);
         break;
-      case 'priority':
-        if (value === '') return;
-        data.priority = parseInt(value);
-        res = await API.put('/api/channel/', data);
-        break;
       case 'weight':
         if (value === '') return;
         data.weight = parseInt(value);
@@ -618,13 +602,6 @@ export const useChannelsData = () => {
   // Tag edit
   const submitTagEdit = async (type, data) => {
     switch (type) {
-      case 'priority':
-        if (data.priority === undefined || data.priority === '') {
-          showInfo('优先级必须是整数！');
-          return;
-        }
-        data.priority = parseInt(data.priority);
-        break;
       case 'weight':
         if (
           data.weight === undefined ||

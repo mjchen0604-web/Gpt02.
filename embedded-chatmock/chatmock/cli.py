@@ -359,17 +359,16 @@ def main() -> None:
         choices=["auto", "chatgpt-backend", "codex-app-server"],
         default=(os.getenv("CHATGPT_LOCAL_UPSTREAM") or UPSTREAM_MODE_DEFAULT).strip().lower(),
         help=(
-            "Select the upstream provider. "
-            "'auto' sends normal requests to chatgpt-backend and fast/codex requests to codex-app-server. "
-            "'chatgpt-backend' forces the backend path. "
-            "'codex-app-server' forces the local Codex app-server WebSocket."
+            "Legacy compatibility knob. "
+            "Normal requests always use IIfyI. "
+            "Requests with service_tier 'fast' or 'flex' always use IIfyl."
         ),
     )
     p_serve.add_argument(
         "--codex-app-server-url",
         dest="codex_app_server_url",
         default=(os.getenv("CHATGPT_LOCAL_CODEX_APP_SERVER_URL") or CODEX_APP_SERVER_URL_DEFAULT).strip(),
-        help="WebSocket URL for the local Codex app-server (default: ws://127.0.0.1:8787).",
+        help="WebSocket URL for the local IIfyl path (default: ws://127.0.0.1:8787).",
     )
     p_serve.add_argument(
         "--service-tier",
@@ -377,7 +376,7 @@ def main() -> None:
         default=(os.getenv("CHATGPT_LOCAL_SERVICE_TIER") or "").strip() or None,
         help=(
             "Optional service tier override. "
-            "Use 'fast' or 'flex' with codex-app-server. "
+            "Use 'fast' or 'flex'; both force IIfyl for that request. "
             "Omit to leave unset."
         ),
     )

@@ -288,6 +288,11 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 		calculateQuota = modelPrice * common.QuotaPerUnit * groupRatio
 	}
 
+	longContextMultiplier := ratio_setting.GetLongContextPricingMultiplier(modelName, promptTokens)
+	if longContextMultiplier > 1 {
+		calculateQuota = calculateQuota * longContextMultiplier
+	}
+
 	if modelRatio != 0 && calculateQuota <= 0 {
 		calculateQuota = 1
 	}
@@ -297,6 +302,9 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	totalTokens := promptTokens + completionTokens
 
 	var logContent string
+	if longContextMultiplier > 1 {
+		logContent += fmt.Sprintf("超长上下文加价 %.0fx, ", longContextMultiplier)
+	}
 	// record all the consume log even if quota is 0
 	if totalTokens == 0 {
 		// in this case, must be some error happened
@@ -320,6 +328,13 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 		cacheCreationTokens5m, cacheCreationRatio5m,
 		cacheCreationTokens1h, cacheCreationRatio1h,
 		modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
+	if longContextMultiplier > 1 {
+		other["long_context_surcharge"] = true
+		other["long_context_multiplier"] = longContextMultiplier
+		other["long_context_prompt_tokens"] = promptTokens
+		other["long_context_threshold"] = ratio_setting.GetLongContextThresholdTokens()
+		other["long_context_max_tokens"] = ratio_setting.GetLongContextMaxTokens()
+	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     promptTokens,

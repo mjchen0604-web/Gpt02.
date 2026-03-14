@@ -97,6 +97,11 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		preConsumedQuota = int(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 	}
 
+	longContextMultiplier := ratio_setting.GetLongContextPricingMultiplier(info.OriginModelName, promptTokens)
+	if !usePrice && longContextMultiplier > 1 {
+		preConsumedQuota = int(float64(preConsumedQuota) * longContextMultiplier)
+	}
+
 	if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
 		if groupRatioInfo.GroupRatio == 0 {
 			preConsumedQuota = 0
@@ -113,20 +118,22 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	}
 
 	priceData := types.PriceData{
-		FreeModel:            freeModel,
-		ModelPrice:           modelPrice,
-		ModelRatio:           modelRatio,
-		CompletionRatio:      completionRatio,
-		GroupRatioInfo:       groupRatioInfo,
-		UsePrice:             usePrice,
-		CacheRatio:           cacheRatio,
-		ImageRatio:           imageRatio,
-		AudioRatio:           audioRatio,
-		AudioCompletionRatio: audioCompletionRatio,
-		CacheCreationRatio:   cacheCreationRatio,
-		CacheCreation5mRatio: cacheCreationRatio5m,
-		CacheCreation1hRatio: cacheCreationRatio1h,
-		QuotaToPreConsume:    preConsumedQuota,
+		FreeModel:             freeModel,
+		ModelPrice:            modelPrice,
+		ModelRatio:            modelRatio,
+		CompletionRatio:       completionRatio,
+		GroupRatioInfo:        groupRatioInfo,
+		UsePrice:              usePrice,
+		CacheRatio:            cacheRatio,
+		ImageRatio:            imageRatio,
+		AudioRatio:            audioRatio,
+		AudioCompletionRatio:  audioCompletionRatio,
+		CacheCreationRatio:    cacheCreationRatio,
+		CacheCreation5mRatio:  cacheCreationRatio5m,
+		CacheCreation1hRatio:  cacheCreationRatio1h,
+		QuotaToPreConsume:     preConsumedQuota,
+		LongContextTriggered:  longContextMultiplier > 1,
+		LongContextMultiplier: longContextMultiplier,
 	}
 
 	if common.DebugEnabled {

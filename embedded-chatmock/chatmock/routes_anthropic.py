@@ -14,6 +14,7 @@ from .reasoning import (
     build_reasoning_param,
     extract_reasoning_from_model_name,
     extract_service_tier_from_model_name,
+    public_service_tier_name,
 )
 from .upstream_errors import (
     build_anthropic_error_response,
@@ -49,10 +50,10 @@ def _instructions_for_model(model: str) -> str:
 
 
 def _upstream_attempt_limit(is_stream: bool, model: str | None = None, service_tier: str | None = None) -> int:
-    if is_stream:
-        return 1
     configured_mode = str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower()
     selected_mode = resolve_upstream_mode(configured_mode, model or "", service_tier)
+    if is_stream and selected_mode != "codex-app-server":
+        return 1
     if selected_mode != "codex-app-server":
         return 1
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
@@ -728,8 +729,8 @@ def messages() -> Response:
         "stop_sequence": None,
         "usage": {"input_tokens": usage_in, "output_tokens": usage_out},
     }
-    if expose_service_tier and observed_service_tier:
-        message_obj["service_tier"] = observed_service_tier
+    if observed_service_tier:
+        message_obj["performance_mode"] = public_service_tier_name(observed_service_tier)
     if verbose:
         _log_json("OUT POST /v1/messages", message_obj)
 
@@ -737,7 +738,7 @@ def messages() -> Response:
     if expose_service_tier and service_tier:
         resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = observed_service_tier
+        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp

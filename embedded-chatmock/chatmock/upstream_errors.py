@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import re
 from typing import Any, Mapping
 
 from flask import Response, jsonify, make_response
@@ -35,6 +37,14 @@ _PERMISSION_KEYWORDS = (
     "not allowed",
     "access denied",
     "insufficient permissions",
+)
+
+_RATE_LIMIT_KEYWORDS = (
+    "usage limit",
+    "try again at",
+    "upgrade to plus to continue using codex",
+    "rate limit",
+    "too many requests",
 )
 
 
@@ -85,6 +95,41 @@ def _extract_nested_code(payload: Any) -> str | None:
         code = _compact_string(error_block.get("code"))
         if code:
             return code
+    return None
+
+
+def _error_text_haystack(info: Mapping[str, Any]) -> str:
+    text_parts = [
+        _compact_string(info.get("raw_message")),
+        _compact_string(info.get("raw_code")),
+    ]
+    raw_body = info.get("raw_body")
+    if isinstance(raw_body, (dict, list)):
+        try:
+            text_parts.append(json.dumps(raw_body, ensure_ascii=False))
+        except Exception:
+            text_parts.append(_compact_string(raw_body))
+    else:
+        text_parts.append(_compact_string(raw_body))
+    return " ".join(part for part in text_parts if part).lower()
+
+
+def extract_retry_after_unlock_ts(info: Mapping[str, Any]) -> float | None:
+    haystack = _error_text_haystack(info)
+    match = re.search(r"try again at\s+([^.]+)", haystack, flags=re.IGNORECASE)
+    if not match:
+        return None
+    raw_value = match.group(1).strip().rstrip(".,;:!?)")
+    cleaned = re.sub(r"(\d{1,2})(st|nd|rd|th)", r"\1", raw_value, flags=re.IGNORECASE)
+    local_tz = datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
+    for fmt in ("%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p"):
+        try:
+            dt = datetime.datetime.strptime(cleaned, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=local_tz)
+            return dt.timestamp()
+        except Exception:
+            continue
     return None
 
 
@@ -237,19 +282,7 @@ def classify_error(info: Mapping[str, Any]) -> str:
         return category_override
     raw_status = info.get("raw_status")
     status = int(raw_status) if isinstance(raw_status, int) else None
-    text_parts = [
-        _compact_string(info.get("raw_message")),
-        _compact_string(info.get("raw_code")),
-    ]
-    raw_body = info.get("raw_body")
-    if isinstance(raw_body, (dict, list)):
-        try:
-            text_parts.append(json.dumps(raw_body, ensure_ascii=False))
-        except Exception:
-            text_parts.append(_compact_string(raw_body))
-    else:
-        text_parts.append(_compact_string(raw_body))
-    haystack = " ".join(part for part in text_parts if part).lower()
+    haystack = _error_text_haystack(info)
 
     if status == 429:
         if any(keyword in haystack for keyword in _INSUFFICIENT_KEYWORDS):
@@ -273,6 +306,8 @@ def classify_error(info: Mapping[str, Any]) -> str:
         return "not_found"
     if status == 413:
         return "request_too_large"
+    if any(keyword in haystack for keyword in _RATE_LIMIT_KEYWORDS):
+        return "rate_limited"
     if any(keyword in haystack for keyword in _PERMISSION_KEYWORDS):
         return "permission_denied"
     return "generic_failure"
@@ -314,6 +349,8 @@ def normalized_error_type(info: Mapping[str, Any]) -> str:
 
 def normalized_error_code(info: Mapping[str, Any]) -> str | None:
     raw_code = _compact_string(info.get("raw_code"))
+    if raw_code.lower() == "deactivated_workspace":
+        return None
     if raw_code:
         return raw_code
     category = classify_error(info)
@@ -339,6 +376,10 @@ def normalized_error_message(info: Mapping[str, Any]) -> str:
         if expose_internal:
             return raw_message
         lowered = raw_message.lower()
+        if "deactivated_workspace" in lowered:
+            return "Account unavailable"
+        if "codex app-server" in lowered:
+            return "The server had an error while processing your request."
         if category == "generic_failure" and any(
             marker in lowered
             for marker in (
@@ -358,7 +399,7 @@ def normalized_error_message(info: Mapping[str, Any]) -> str:
     if category == "rate_limited":
         return "Rate limit exceeded"
     if category == "account_invalid":
-        return "Account credentials are invalid"
+        return "Account unavailable"
     if category == "permission_denied":
         return "Permission denied"
     if category == "invalid_request":
@@ -398,7 +439,7 @@ def normalized_error_payload(info: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def should_retry_next_candidate(info: Mapping[str, Any]) -> bool:
-    return classify_error(info) in ("insufficient_balance", "account_invalid")
+    return classify_error(info) in ("insufficient_balance", "rate_limited", "account_invalid") or extract_retry_after_unlock_ts(info) is not None
 
 
 def build_openai_error_response(info: Mapping[str, Any]) -> Response:

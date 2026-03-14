@@ -15,7 +15,9 @@ from .reasoning import (
     build_reasoning_param,
     extract_reasoning_from_model_name,
     extract_service_tier_from_model_name,
+    public_service_tier_name,
 )
+from .surface_names import public_upstream_name
 from .upstream_errors import (
     build_error_info,
     build_openai_error_response,
@@ -88,22 +90,22 @@ def _log_fast_probe(
         "phase": phase,
         "requested_model": requested_model,
         "normalized_model": normalized_model,
-        "selected_upstream_mode": selected_mode,
-        "requested_service_tier": requested_service_tier,
-        "observed_service_tier": observed_service_tier,
+        "selected_path": public_upstream_name(selected_mode),
+        "requested_performance_mode": public_service_tier_name(requested_service_tier),
+        "observed_performance_mode": public_service_tier_name(observed_service_tier),
         "stream": bool(is_stream),
     }
     if upstream is not None:
-        payload["upstream_source"] = getattr(upstream, "chatmock_source", None)
+        payload["upstream_path"] = public_upstream_name(getattr(upstream, "chatmock_source", None))
         payload["candidate_label"] = getattr(upstream, "chatmock_candidate_label", None)
         payload["thread_mode"] = getattr(upstream, "chatmock_thread_mode", None)
     if isinstance(extra, dict):
         payload.update(extra)
     try:
-        current_app.logger.info("fast_probe %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        current_app.logger.info("perf_trace %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
     except Exception:
         try:
-            print(f"fast_probe {payload}")
+            print(f"perf_trace {payload}")
         except Exception:
             pass
 
@@ -118,10 +120,10 @@ def _instructions_for_model(model: str) -> str:
 
 
 def _upstream_attempt_limit(is_stream: bool, model: str | None = None, service_tier: str | None = None) -> int:
-    if is_stream:
-        return 1
     configured_mode = str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower()
     selected_mode = resolve_upstream_mode(configured_mode, model or "", service_tier)
+    if is_stream and selected_mode != "codex-app-server":
+        return 1
     if selected_mode != "codex-app-server":
         return 1
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
@@ -805,8 +807,6 @@ def chat_completions() -> Response:
         )
         if expose_service_tier and service_tier:
             resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-        if isinstance(getattr(upstream, "_observed_service_tier", None), str) and str(getattr(upstream, "_observed_service_tier")).strip().lower() == "fast":
-            resp.headers["IDIIfy-Priority-Equivalent"] = "true"
         if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
             resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
             resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
@@ -848,8 +848,8 @@ def chat_completions() -> Response:
     if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
         completion["thread_id"] = upstream.chatmock_thread_id
         completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
-    if expose_service_tier and observed_service_tier:
-        completion["service_tier"] = observed_service_tier
+    if observed_service_tier:
+        completion["performance_mode"] = public_service_tier_name(observed_service_tier)
     if verbose:
         _log_json("OUT POST /v1/chat/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
@@ -867,9 +867,7 @@ def chat_completions() -> Response:
     if expose_service_tier and service_tier:
         resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = observed_service_tier
-    if isinstance(observed_service_tier, str) and observed_service_tier.strip().lower() == "fast":
-        resp.headers["IDIIfy-Priority-Equivalent"] = "true"
+        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
     if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
         resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
         resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
@@ -1117,8 +1115,6 @@ def completions() -> Response:
         )
         if expose_service_tier and service_tier:
             resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-        if isinstance(getattr(upstream, "_observed_service_tier", None), str) and str(getattr(upstream, "_observed_service_tier")).strip().lower() == "fast":
-            resp.headers["IDIIfy-Priority-Equivalent"] = "true"
         if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
             resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
             resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
@@ -1156,8 +1152,8 @@ def completions() -> Response:
     if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
         completion["thread_id"] = upstream.chatmock_thread_id
         completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
-    if expose_service_tier and observed_service_tier:
-        completion["service_tier"] = observed_service_tier
+    if observed_service_tier:
+        completion["performance_mode"] = public_service_tier_name(observed_service_tier)
     if verbose:
         _log_json("OUT POST /v1/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
@@ -1175,9 +1171,7 @@ def completions() -> Response:
     if expose_service_tier and service_tier:
         resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
     if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = observed_service_tier
-    if isinstance(observed_service_tier, str) and observed_service_tier.strip().lower() == "fast":
-        resp.headers["IDIIfy-Priority-Equivalent"] = "true"
+        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
     if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
         resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
         resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))

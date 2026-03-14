@@ -16,8 +16,14 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from .codex_app_server import CodexAppServerError
-from .upstream_errors import classify_error, error_info_from_event_response
-from .utils import handle_chatgpt_candidate_failure, mark_chatgpt_auth_result, remove_chatgpt_auth_candidate
+from .surface_names import redact_internal_route_terms
+from .upstream_errors import classify_error, error_info_from_event_response, extract_retry_after_unlock_ts
+from .utils import (
+    get_max_inflight_per_account,
+    handle_chatgpt_candidate_failure,
+    mark_chatgpt_auth_result,
+    remove_chatgpt_auth_candidate,
+)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -453,7 +459,7 @@ class CodexAppServerManager:
 
     def _append_log(self, line: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
-        entry = f"[{stamp}] [{self._label}] {line.rstrip()}"
+        entry = f"[{stamp}] [{self._label}] {redact_internal_route_terms(line.rstrip())}"
         with self._lock:
             self._log_lines.append(entry)
         print(entry)
@@ -538,7 +544,7 @@ class CodexAppServerPoolManager:
 
     def _append_log(self, line: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
-        entry = f"[{stamp}] [pool] {line.rstrip()}"
+        entry = f"[{stamp}] [pool] {redact_internal_route_terms(line.rstrip())}"
         with self._lock:
             self._log_lines.append(entry)
         print(entry)
@@ -714,6 +720,13 @@ class CodexAppServerPoolManager:
             state = dict(self._request_state.get(label) or {})
             cooldown_until = float(state.get("cooldown_until") or 0.0)
             status["cooldownRemaining"] = max(0, int(cooldown_until - now))
+            status["cooldownUntil"] = cooldown_until
+            status["unlockAt"] = (
+                datetime.fromtimestamp(cooldown_until, timezone.utc).isoformat()
+                if cooldown_until > now
+                else ""
+            )
+            status["inflight"] = int(state.get("inflight") or 0)
             status["requestFailures"] = int(state.get("failures") or 0)
             status["requestCount"] = int(state.get("requests_total") or 0)
             status["requestSuccesses"] = int(state.get("successes_total") or 0)
@@ -858,7 +871,8 @@ class CodexAppServerPoolManager:
         statuses = self.status_all()
         now = time.time()
         available: list[str] = []
-        cooling: list[tuple[float, str]] = []
+        saturated: list[str] = []
+        limit = get_max_inflight_per_account()
         for status in statuses:
             label = status.get("label")
             if not isinstance(label, str):
@@ -868,14 +882,16 @@ class CodexAppServerPoolManager:
             state = self._request_state.get(label) or {}
             cooldown_until = float(state.get("cooldown_until") or 0.0)
             if cooldown_until > now:
-                cooling.append((cooldown_until, label))
-            else:
+                continue
+            inflight = int(state.get("inflight") or 0)
+            if inflight < limit:
                 available.append(label)
+            else:
+                saturated.append(label)
         if available:
             return self._ordered_labels(available)
-        if cooling:
-            cooling.sort(key=lambda item: item[0])
-            return self._ordered_labels([label for _, label in cooling])
+        if saturated:
+            return self._ordered_labels(saturated)
         return []
 
     def get_request_candidates(self) -> list[dict[str, str]]:
@@ -896,6 +912,83 @@ class CodexAppServerPoolManager:
                 "account_id": _account_id_from_payload(payload),
             })
         return out
+
+    def claim_request_candidate(
+        self,
+        *,
+        excluded_labels: set[str] | None = None,
+        preferred_label: str | None = None,
+        preferred_url: str | None = None,
+    ) -> dict[str, str] | None:
+        self._sync_instances()
+        excluded = excluded_labels or set()
+        statuses = self.status_all()
+        preferred_candidates: list[dict[str, str]] = []
+        saturated_candidates: list[dict[str, str]] = []
+        limit = get_max_inflight_per_account()
+
+        for status in statuses:
+            label = status.get("label")
+            if not isinstance(label, str) or label in excluded:
+                continue
+            if status.get("status") != "running" or not status.get("listening"):
+                continue
+            cooldown_until = float(status.get("cooldownUntil") or 0.0)
+            if cooldown_until > time.time():
+                continue
+            instance = self._instances.get(label)
+            if instance is None:
+                continue
+            payload = _read_auth_payload(instance.source_auth_path)
+            candidate = {
+                "label": label,
+                "url": instance.url,
+                "auth_path": str(instance.auth_path),
+                "account_id": _account_id_from_payload(payload),
+            }
+            inflight = int(status.get("inflight") or 0)
+            if inflight < limit:
+                preferred_candidates.append(candidate)
+            else:
+                saturated_candidates.append(candidate)
+
+        def _reorder(items: list[dict[str, str]]) -> list[dict[str, str]]:
+            if not items:
+                return items
+            if preferred_label or preferred_url:
+                matched: list[dict[str, str]] = []
+                rest: list[dict[str, str]] = []
+                for item in items:
+                    if (preferred_label and item.get("label") == preferred_label) or (
+                        preferred_url and item.get("url") == preferred_url
+                    ):
+                        matched.append(item)
+                    else:
+                        rest.append(item)
+                items = matched + rest
+            labels = [str(item.get("label") or "") for item in items]
+            ordered_labels = self._ordered_labels(labels)
+            by_label = {str(item.get("label") or ""): item for item in items}
+            return [by_label[label] for label in ordered_labels if label in by_label]
+
+        pool = _reorder(preferred_candidates) or _reorder(saturated_candidates)
+        if not pool:
+            return None
+        selected = pool[0]
+        label = str(selected.get("label") or "")
+        with self._lock:
+            state = dict(self._request_state.get(label) or {})
+            state["inflight"] = int(state.get("inflight") or 0) + 1
+            self._request_state[label] = state
+        return selected
+
+    def release_request_slot(self, label: str) -> None:
+        if not isinstance(label, str) or not label:
+            return
+        with self._lock:
+            state = dict(self._request_state.get(label) or {})
+            state["inflight"] = max(0, int(state.get("inflight") or 0) - 1)
+            self._request_state[label] = state
 
     def remove_auth_for_label(self, label: str, *, reason: str = "") -> bool:
         instance = self._instances.get(label)
@@ -939,6 +1032,10 @@ class CodexAppServerPoolManager:
         now = time.time()
         max_retry_interval = max(5, int(os.getenv("CHATGPT_LOCAL_MAX_RETRY_INTERVAL") or "5"))
         classification = classify_error(error_info or {"raw_status": status_code, "raw_message": error_message})
+        retry_at_until = extract_retry_after_unlock_ts(error_info or {"raw_status": status_code, "raw_message": error_message})
+        effective_classification = classification
+        if retry_at_until is not None and effective_classification == "generic_failure":
+            effective_classification = "rate_limited"
         instance = self._instances.get(label)
         payload = _read_auth_payload(instance.source_auth_path) if instance is not None else None
         account_id = _account_id_from_payload(payload)
@@ -946,6 +1043,7 @@ class CodexAppServerPoolManager:
             state = dict(self._request_state.get(label) or {})
             state["requests_total"] = int(state.get("requests_total") or 0) + 1
             state["last_request_at"] = _utc_now()
+            state["inflight"] = max(0, int(state.get("inflight") or 0) - 1)
             if success:
                 state["failures"] = 0
                 state["cooldown_until"] = 0.0
@@ -959,13 +1057,17 @@ class CodexAppServerPoolManager:
                 mark_chatgpt_auth_result(label, success=True, status_code=status_code, account_id=account_id)
                 self._append_log(f"request result: {label} success")
                 return
-            if classification == "insufficient_balance":
+            if effective_classification in ("insufficient_balance", "rate_limited"):
                 state["failures"] = int(state.get("failures") or 0) + 1
-                state["cooldown_until"] = now + float(5 * 60 * 60)
+                state["cooldown_until"] = float(retry_at_until) if retry_at_until is not None else now + float(5 * 60 * 60)
                 state["last_error"] = error_message or ""
                 state["last_status"] = status_code
-                state["status"] = "cooldown_insufficient_balance"
-                state["last_classification"] = classification
+                state["status"] = (
+                    "cooldown_insufficient_balance"
+                    if effective_classification == "insufficient_balance"
+                    else "cooldown_rate_limited"
+                )
+                state["last_classification"] = effective_classification
                 state["last_raw_code"] = (error_info or {}).get("raw_code") or ""
                 state["last_raw_message"] = (error_info or {}).get("raw_message") or error_message or ""
                 state["updated_at"] = now
@@ -977,20 +1079,21 @@ class CodexAppServerPoolManager:
                     status_code=status_code,
                     account_id=account_id,
                     error_message=error_message,
-                    classification=classification,
-                    cooldown_seconds=5 * 60 * 60,
+                    classification=effective_classification,
+                    cooldown_seconds=None if retry_at_until is not None else 5 * 60 * 60,
+                    cooldown_until_ts=retry_at_until,
                     raw_code=(error_info or {}).get("raw_code"),
                     raw_message=(error_info or {}).get("raw_message"),
                 )
-                self._append_log(f"request result: {label} insufficient balance")
+                self._append_log(f"request result: {label} {effective_classification}")
                 return
-            if classification == "account_invalid":
+            if effective_classification == "account_invalid":
                 state["failures"] = int(state.get("failures") or 0) + 1
                 state["cooldown_until"] = 0.0
                 state["last_error"] = error_message or ""
                 state["last_status"] = status_code
                 state["status"] = "removed_invalid"
-                state["last_classification"] = classification
+                state["last_classification"] = effective_classification
                 state["last_raw_code"] = (error_info or {}).get("raw_code") or ""
                 state["last_raw_message"] = (error_info or {}).get("raw_message") or error_message or ""
                 state["updated_at"] = now
@@ -1004,7 +1107,7 @@ class CodexAppServerPoolManager:
                 state["last_error"] = error_message or ""
                 state["last_status"] = status_code
                 state["status"] = "temporary_failure"
-                state["last_classification"] = classification
+                state["last_classification"] = effective_classification
                 state["last_raw_code"] = (error_info or {}).get("raw_code") or ""
                 state["last_raw_message"] = (error_info or {}).get("raw_message") or error_message or ""
                 state["updated_at"] = now
@@ -1016,12 +1119,12 @@ class CodexAppServerPoolManager:
                     status_code=status_code,
                     account_id=account_id,
                     error_message=error_message,
-                    classification=classification,
+                    classification=effective_classification,
                     raw_code=(error_info or {}).get("raw_code"),
                     raw_message=(error_info or {}).get("raw_message"),
                 )
             self._append_log(f"request result: {label} failure ({error_message or 'unknown error'})")
-        if classification == "account_invalid":
+        if effective_classification == "account_invalid":
             self.remove_auth_for_label(label, reason=error_message or "Invalid account from codex app-server")
 
     def wrap_upstream(self, label: str, upstream: Any) -> ManagedCodexUpstream:

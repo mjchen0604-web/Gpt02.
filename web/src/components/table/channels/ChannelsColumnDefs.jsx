@@ -563,61 +563,6 @@ export const getChannelsColumns = ({
       },
     },
     {
-      key: COLUMN_KEYS.PRIORITY,
-      title: t('优先级'),
-      dataIndex: 'priority',
-      render: (text, record, index) => {
-        if (record.children === undefined) {
-          return (
-            <div>
-              <InputNumber
-                style={{ width: 70 }}
-                name='priority'
-                onBlur={(e) => {
-                  manageChannel(record.id, 'priority', record, e.target.value);
-                }}
-                keepFocus={true}
-                innerButtons
-                defaultValue={record.priority}
-                min={-999}
-                size='small'
-              />
-            </div>
-          );
-        } else {
-          return (
-            <InputNumber
-              style={{ width: 70 }}
-              name='priority'
-              keepFocus={true}
-              onBlur={(e) => {
-                Modal.warning({
-                  title: t('修改子渠道优先级'),
-                  content:
-                    t('确定要修改所有子渠道优先级为 ') +
-                    e.target.value +
-                    t(' 吗？'),
-                  onOk: () => {
-                    if (e.target.value === '') {
-                      return;
-                    }
-                    submitTagEdit('priority', {
-                      tag: record.key,
-                      priority: e.target.value,
-                    });
-                  },
-                });
-              }}
-              innerButtons
-              defaultValue={record.priority}
-              min={-999}
-              size='small'
-            />
-          );
-        }
-      },
-    },
-    {
       key: COLUMN_KEYS.WEIGHT,
       title: t('权重'),
       dataIndex: 'weight',

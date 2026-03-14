@@ -145,3 +145,12 @@ def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | Non
 def extract_service_tier_from_model_name(model: str | None) -> str | None:
     _, _, service_tier = split_model_alias(model)
     return service_tier
+
+
+def public_service_tier_name(service_tier: str | None) -> str | None:
+    if not isinstance(service_tier, str) or not service_tier.strip():
+        return None
+    normalized = service_tier.strip().lower()
+    if normalized == "fast":
+        return "turbo"
+    return normalized

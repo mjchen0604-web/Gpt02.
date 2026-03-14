@@ -181,7 +181,6 @@ const EditChannelModal = (props) => {
     auto_ban: 1,
     test_model: '',
     groups: ['default'],
-    priority: 0,
     weight: 0,
     tag: '',
     multi_key_mode: 'random',
@@ -3443,18 +3442,6 @@ const EditChannelModal = (props) => {
                     />
 
                     <Row gutter={12}>
-                      <Col span={12}>
-                        <Form.InputNumber
-                          field='priority'
-                          label={t('渠道优先级')}
-                          placeholder={t('渠道优先级')}
-                          min={0}
-                          onNumberChange={(value) =>
-                            handleInputChange('priority', value)
-                          }
-                          style={{ width: '100%' }}
-                        />
-                      </Col>
                       <Col span={12}>
                         <Form.InputNumber
                           field='weight'

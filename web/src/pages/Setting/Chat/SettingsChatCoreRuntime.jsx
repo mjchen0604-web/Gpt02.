@@ -63,6 +63,45 @@ const safeText = (value, fallback = '-') => {
   return text || fallback;
 };
 
+const formatAccountStatus = (record) => {
+  if (!record || typeof record !== 'object') {
+    return '-';
+  }
+
+  const status = String(record.status || '').trim();
+  const lastStatus = record.last_status;
+  const lastClassification = String(record.last_classification || '').trim();
+  const lastError = String(record.last_error || record.error || '').trim();
+  const cooldownRemaining = Number(record.cooldown_remaining || 0);
+  const unlockAt = String(record.unlock_at || '').trim();
+
+  const parts = [];
+
+  if (Number.isFinite(lastStatus) && lastStatus > 0) {
+    parts.push(`HTTP ${lastStatus}`);
+  } else if (status) {
+    parts.push(status);
+  }
+
+  if (lastClassification && lastClassification !== 'ready') {
+    parts.push(lastClassification);
+  }
+
+  if (cooldownRemaining > 0) {
+    parts.push(`cooldown ${cooldownRemaining}s`);
+  }
+
+  if (unlockAt) {
+    parts.push(`until ${unlockAt}`);
+  }
+
+  if (lastError) {
+    parts.push(lastError);
+  }
+
+  return parts.length > 0 ? parts.join(' | ') : '-';
+};
+
 export default function SettingsChatCoreRuntime() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -95,7 +134,7 @@ export default function SettingsChatCoreRuntime() {
       {
         title: '状态',
         dataIndex: 'last_status',
-        render: (_, record) => safeText(record.last_status || record.error),
+        render: (_, record) => formatAccountStatus(record),
       },
     ],
     [],
@@ -291,17 +330,20 @@ export default function SettingsChatCoreRuntime() {
                     {controlBlock(
                       '上游模式',
                       <Select
-                        value={settings.upstreamMode || 'codex-app-server'}
+                        value='auto'
                         optionList={selectOptions([
-                          { label: 'codex-app-server', value: 'codex-app-server' },
+                          {
+                            label: 'auto (标准请求走主路由，turbo/flex 走高性能路由)',
+                            value: 'auto',
+                          },
                         ])}
-                        onChange={(value) => handleSettingChange('upstreamMode', value)}
+                        onChange={() => handleSettingChange('upstreamMode', 'auto')}
                       />,
                     )}
                   </Col>
                   <Col xs={24} sm={12}>
                     {controlBlock(
-                      'Codex App Server URL',
+                      '高性能路由 URL',
                       <Input
                         value={settings.codexAppServerUrl || 'ws://127.0.0.1:8787'}
                         onChange={(value) => handleSettingChange('codexAppServerUrl', value)}
@@ -310,14 +352,13 @@ export default function SettingsChatCoreRuntime() {
                   </Col>
                   <Col xs={24} sm={12}>
                     {controlBlock(
-                      'Service Tier',
+                      'Performance Mode',
                       <Select
                         value={settings.serviceTier ?? ''}
                         optionList={selectOptions([
                           { label: '默认 / 不透传', value: '' },
-                          { label: 'fast', value: 'fast' },
+                          { label: 'turbo', value: 'fast' },
                           { label: 'flex', value: 'flex' },
-                          { label: 'priority', value: 'priority' },
                         ])}
                         onChange={(value) => handleSettingChange('serviceTier', value)}
                       />,
@@ -444,7 +485,7 @@ export default function SettingsChatCoreRuntime() {
                   </Col>
                   <Col xs={24} sm={12} md={8}>
                     <div style={{ marginBottom: 12 }}>
-                      <Text>托管 Codex App Server</Text>
+                      <Text>托管高性能内核</Text>
                       <div>
                         <Switch
                           checked={Boolean(settings.manageCodexAppServer)}
@@ -457,7 +498,7 @@ export default function SettingsChatCoreRuntime() {
                   </Col>
                   <Col xs={24} sm={12} md={8}>
                     <div style={{ marginBottom: 12 }}>
-                      <Text>自动启动 Codex App Server</Text>
+                      <Text>自动启动高性能内核</Text>
                       <div>
                         <Switch
                           checked={Boolean(settings.autoStartCodexAppServer)}

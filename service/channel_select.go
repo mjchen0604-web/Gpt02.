@@ -60,8 +60,8 @@ func (p *RetryParam) ResetRetryNextTry() {
 //   - Uses ContextKeyAutoGroupRetryIndex to track the global Retry count when current group started.
 //     使用 ContextKeyAutoGroupRetryIndex 跟踪当前分组开始时的全局重试次数。
 //
-//   - priorityRetry = Retry - startRetryIndex, represents the priority level within current group.
-//     priorityRetry = Retry - startRetryIndex，表示当前分组内的优先级级别。
+//   - groupRetry = Retry - startRetryIndex, represents the retry count within current group.
+//     groupRetry = Retry - startRetryIndex，表示当前分组内的重试次数。
 //
 //   - When GetRandomSatisfiedChannel returns nil (priorities exhausted), moves to next group.
 //     当 GetRandomSatisfiedChannel 返回 nil（优先级用完）时，切换到下一个分组。
@@ -69,17 +69,17 @@ func (p *RetryParam) ResetRetryNextTry() {
 // Example flow (2 groups, each with 2 priorities, RetryTimes=3):
 // 示例流程（2个分组，每个有2个优先级，RetryTimes=3）：
 //
-//	Retry=0: GroupA, priority0 (startRetryIndex=0, priorityRetry=0)
-//	         分组A, 优先级0
+//	Retry=0: GroupA, retry0 (startRetryIndex=0, groupRetry=0)
+//	         分组A, 第0次重试
 //
-//	Retry=1: GroupA, priority1 (startRetryIndex=0, priorityRetry=1)
-//	         分组A, 优先级1
+//	Retry=1: GroupA, retry1 (startRetryIndex=0, groupRetry=1)
+//	         分组A, 第1次重试
 //
-//	Retry=2: GroupA exhausted → GroupB, priority0 (startRetryIndex=2, priorityRetry=0)
-//	         分组A用完 → 分组B, 优先级0
+//	Retry=2: GroupA exhausted → GroupB, retry0 (startRetryIndex=2, groupRetry=0)
+//	         分组A用完 → 分组B, 第0次重试
 //
-//	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
-//	         分组B, 优先级1
+//	Retry=3: GroupB, retry1 (startRetryIndex=2, groupRetry=1)
+//	         分组B, 第1次重试
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
 	var channel *model.Channel
 	var err error
@@ -105,21 +105,21 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 		for i := startGroupIndex; i < len(autoGroups); i++ {
 			autoGroup := autoGroups[i]
-			// Calculate priorityRetry for current group
-			// 计算当前分组的 priorityRetry
-			priorityRetry := param.GetRetry()
-			// If moved to a new group, reset priorityRetry and update startRetryIndex
-			// 如果切换到新分组，重置 priorityRetry 并更新 startRetryIndex
+			// Calculate groupRetry for current group
+			// 计算当前分组的 groupRetry
+			groupRetry := param.GetRetry()
+			// If moved to a new group, reset groupRetry and update startRetryIndex
+			// 如果切换到新分组，重置 groupRetry 并更新 startRetryIndex
 			if i > startGroupIndex {
-				priorityRetry = 0
+				groupRetry = 0
 			}
-			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
+			logger.LogDebug(param.Ctx, "Auto selecting group: %s, groupRetry: %d", autoGroup, groupRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, groupRetry)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
-				logger.LogDebug(param.Ctx, "No available channel in group %s for model %s at priorityRetry %d, trying next group", autoGroup, param.ModelName, priorityRetry)
+				logger.LogDebug(param.Ctx, "No available channel in group %s for model %s at groupRetry %d, trying next group", autoGroup, param.ModelName, groupRetry)
 				// 重置状态以尝试下一个分组
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupRetryIndex, 0)
@@ -134,12 +134,12 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 			// Prepare state for next retry
 			// 为下一次重试准备状态
-			if crossGroupRetry && priorityRetry >= common.RetryTimes {
+			if crossGroupRetry && groupRetry >= common.RetryTimes {
 				// Current group has exhausted all retries, prepare to switch to next group
 				// This request still uses current group, but next retry will use next group
 				// 当前分组已用完所有重试次数，准备切换到下一个分组
 				// 本次请求仍使用当前分组，但下次重试将使用下一个分组
-				logger.LogDebug(param.Ctx, "Current group %s retries exhausted (priorityRetry=%d >= RetryTimes=%d), preparing switch to next group for next retry", autoGroup, priorityRetry, common.RetryTimes)
+				logger.LogDebug(param.Ctx, "Current group %s retries exhausted (groupRetry=%d >= RetryTimes=%d), preparing switch to next group for next retry", autoGroup, groupRetry, common.RetryTimes)
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
 				// Reset retry counter so outer loop can continue for next group
 				// 重置重试计数器，以便外层循环可以为下一个分组继续

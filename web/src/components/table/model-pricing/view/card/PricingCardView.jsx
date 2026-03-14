@@ -38,6 +38,7 @@ import {
   stringToColor,
   calculateModelPrice,
   formatPriceInfo,
+  getLongContextPricingNote,
   getLobeHubIcon,
 } from '../../../../../helpers';
 import PricingCardSkeleton from './PricingCardSkeleton';
@@ -249,6 +250,7 @@ const PricingCardView = ({
             currency,
             quotaDisplayType: siteDisplayType,
           });
+          const longContextNote = getLongContextPricingNote(model, t);
 
           return (
             <Card
@@ -268,6 +270,9 @@ const PricingCardView = ({
                       </h3>
                       <div className='flex flex-col gap-1 text-xs mt-1'>
                         {formatPriceInfo(priceData, t, siteDisplayType)}
+                        {longContextNote ? (
+                          <span className='text-orange-600'>{longContextNote}</span>
+                        ) : null}
                       </div>
                     </div>
                   </div>

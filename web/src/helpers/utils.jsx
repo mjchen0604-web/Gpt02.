@@ -761,6 +761,20 @@ export const calculateModelPrice = ({
   };
 };
 
+export const getLongContextPricingNote = (record, t = (key) => key) => {
+  if (!record || record.quota_type !== 0) {
+    return null;
+  }
+  const modelName = String(record.model_name || '').toLowerCase();
+  if (!modelName.startsWith('gpt-5.4')) {
+    return null;
+  }
+  if (modelName.includes('-fast') || modelName.includes('-turbo')) {
+    return t('注：输入上下文 >272K 且 <=1M 时，按普通同档价格 4x 计费');
+  }
+  return t('注：输入上下文 >272K 且 <=1M 时，按当前价格 2x 计费');
+};
+
 export const getModelPriceItems = (
   priceData,
   t,

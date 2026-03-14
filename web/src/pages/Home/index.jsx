@@ -26,11 +26,16 @@ const Home = () => {
 
   return (
     <div className='w-full min-h-[calc(100vh-64px)] flex items-center justify-center px-6 py-10 overflow-hidden'>
-      <img
-        src={logo}
-        alt={systemName}
-        className='w-full max-w-[560px] object-contain select-none'
-      />
+      <div className='flex flex-col items-center justify-center text-center'>
+        <img
+          src={logo}
+          alt={systemName}
+          className='w-full max-w-[560px] object-contain select-none'
+        />
+        <div className='mt-8 text-[28px] md:text-[36px] font-black tracking-[0.08em] text-black'>
+          只做纯满血的API
+        </div>
+      </div>
     </div>
   );
 };

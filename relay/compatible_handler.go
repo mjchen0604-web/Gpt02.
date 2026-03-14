@@ -390,6 +390,20 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	} else {
 		quotaCalculateDecimal = dModelPrice.Mul(dQuotaPerUnit).Mul(dGroupRatio)
 	}
+	longContextMultiplier := ratio_setting.GetLongContextPricingMultiplier(modelName, promptTokens)
+	if longContextMultiplier > 1 {
+		quotaCalculateDecimal = quotaCalculateDecimal.Mul(decimal.NewFromFloat(longContextMultiplier))
+		extraContent = append(
+			extraContent,
+			fmt.Sprintf(
+				"Long context surcharge %.0fx (> %d and <= %d input tokens, actual %d)",
+				longContextMultiplier,
+				ratio_setting.GetLongContextThresholdTokens(),
+				ratio_setting.GetLongContextMaxTokens(),
+				promptTokens,
+			),
+		)
+	}
 	// 添加 responses tools call 调用的配额
 	quotaCalculateDecimal = quotaCalculateDecimal.Add(dWebSearchQuota)
 	quotaCalculateDecimal = quotaCalculateDecimal.Add(dFileSearchQuota)
@@ -444,6 +458,13 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	other := service.GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, cacheTokens, cacheRatio, modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason
+	}
+	if longContextMultiplier > 1 {
+		other["long_context_surcharge"] = true
+		other["long_context_multiplier"] = longContextMultiplier
+		other["long_context_prompt_tokens"] = promptTokens
+		other["long_context_threshold"] = ratio_setting.GetLongContextThresholdTokens()
+		other["long_context_max_tokens"] = ratio_setting.GetLongContextMaxTokens()
 	}
 	// For chat-based calls to the Claude model, tagging is required. Using Claude's rendering logs, the two approaches handle input rendering differently.
 	if isClaudeUsageSemantic {

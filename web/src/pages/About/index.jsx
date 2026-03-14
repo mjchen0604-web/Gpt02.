@@ -18,8 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { API, getLogo, getSystemName, showError } from '../../helpers';
+import { API, getLogo, getSystemName, showError, showSuccess } from '../../helpers';
 import { marked } from 'marked';
+import { Button, Modal, TextArea } from '@douyinfe/semi-ui';
 
 const normalizeBranding = (content, systemName) => {
   if (!content) return content;
@@ -30,15 +31,30 @@ const normalizeBranding = (content, systemName) => {
 
 const About = () => {
   const [about, setAbout] = useState('');
+  const [aboutRaw, setAboutRaw] = useState('');
   const [aboutLoaded, setAboutLoaded] = useState(false);
+  const [editorVisible, setEditorVisible] = useState(false);
+  const [editorValue, setEditorValue] = useState('');
+  const [savingAbout, setSavingAbout] = useState(false);
   const logo = getLogo();
   const systemName = getSystemName();
+  const isAdmin = useMemo(() => {
+    try {
+      const raw = localStorage.getItem('user');
+      if (!raw) return false;
+      const user = JSON.parse(raw);
+      return typeof user?.role === 'number' && user.role >= 10;
+    } catch (error) {
+      return false;
+    }
+  }, []);
 
   const displayAbout = async () => {
     setAbout(normalizeBranding(localStorage.getItem('about') || '', systemName));
     const res = await API.get('/api/about');
     const { success, message, data } = res.data;
     if (success) {
+      setAboutRaw(typeof data === 'string' ? data : '');
       const normalized = normalizeBranding(data, systemName);
       let aboutContent = normalized;
       if (!normalized.startsWith('https://')) {
@@ -51,6 +67,33 @@ const About = () => {
       setAbout('加载关于内容失败...');
     }
     setAboutLoaded(true);
+  };
+
+  const openEditor = () => {
+    setEditorValue(aboutRaw || '');
+    setEditorVisible(true);
+  };
+
+  const submitAbout = async () => {
+    setSavingAbout(true);
+    try {
+      const res = await API.put('/api/option/', {
+        key: 'About',
+        value: editorValue,
+      });
+      const { success, message } = res.data;
+      if (!success) {
+        showError(message || '关于内容更新失败');
+        return;
+      }
+      showSuccess('关于内容已更新');
+      setEditorVisible(false);
+      await displayAbout();
+    } catch (error) {
+      showError('关于内容更新失败');
+    } finally {
+      setSavingAbout(false);
+    }
   };
 
   useEffect(() => {
@@ -74,11 +117,46 @@ const About = () => {
   );
 
   if (aboutLoaded && about === '') {
-    return <div className='mt-[60px]'>{emptyContent}</div>;
+    return (
+      <div className='mt-[60px] relative'>
+        {isAdmin ? (
+          <div className='absolute right-4 top-4 z-10 flex gap-2'>
+            <Button type='primary' theme='solid' onClick={openEditor}>
+              编辑关于
+            </Button>
+          </div>
+        ) : null}
+        {emptyContent}
+        <Modal
+          title='编辑关于'
+          visible={editorVisible}
+          onCancel={() => setEditorVisible(false)}
+          onOk={submitAbout}
+          okText='保存'
+          cancelText='取消'
+          confirmLoading={savingAbout}
+          width={760}
+        >
+          <TextArea
+            value={editorValue}
+            onChange={setEditorValue}
+            autosize={{ minRows: 12, maxRows: 24 }}
+            placeholder='支持 Markdown、HTML，或直接填一个 https:// 链接作为 iframe 页面'
+          />
+        </Modal>
+      </div>
+    );
   }
 
   return (
-    <div className='mt-[60px] px-2'>
+    <div className='mt-[60px] px-2 relative'>
+      {isAdmin ? (
+        <div className='flex justify-end mb-3'>
+          <Button type='primary' theme='solid' onClick={openEditor}>
+            编辑关于
+          </Button>
+        </div>
+      ) : null}
       {about.startsWith('https://') ? (
         <iframe
           src={about}
@@ -90,6 +168,23 @@ const About = () => {
           dangerouslySetInnerHTML={{ __html: about }}
         ></div>
       )}
+      <Modal
+        title='编辑关于'
+        visible={editorVisible}
+        onCancel={() => setEditorVisible(false)}
+        onOk={submitAbout}
+        okText='保存'
+        cancelText='取消'
+        confirmLoading={savingAbout}
+        width={760}
+      >
+        <TextArea
+          value={editorValue}
+          onChange={setEditorValue}
+          autosize={{ minRows: 12, maxRows: 24 }}
+          placeholder='支持 Markdown、HTML，或直接填一个 https:// 链接作为 iframe 页面'
+        />
+      </Modal>
     </div>
   );
 };

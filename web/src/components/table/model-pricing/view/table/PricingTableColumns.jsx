@@ -24,6 +24,7 @@ import {
   renderModelTag,
   stringToColor,
   calculateModelPrice,
+  getLongContextPricingNote,
   getModelPriceItems,
   getLobeHubIcon,
 } from '../../../../../helpers';
@@ -235,6 +236,7 @@ export const getPricingTableColumns = ({
     render: (text, record, index) => {
       const priceData = getPriceData(record);
       const priceItems = getModelPriceItems(priceData, t, siteDisplayType);
+      const longContextNote = getLongContextPricingNote(record, t);
 
       return (
         <div className='space-y-1'>
@@ -244,6 +246,9 @@ export const getPricingTableColumns = ({
               {item.suffix}
             </div>
           ))}
+          {longContextNote ? (
+            <div className='text-xs text-orange-600'>{longContextNote}</div>
+          ) : null}
         </div>
       );
     },

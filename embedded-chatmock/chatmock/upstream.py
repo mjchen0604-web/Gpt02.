@@ -13,12 +13,16 @@ from .config import CHATGPT_RESPONSES_URL
 from .http import build_cors_headers
 from .reasoning import split_model_alias
 from .session import ensure_session_id
+from .surface_names import public_upstream_name
 from .upstream_errors import (
     build_error_info,
     build_openai_error_response,
     error_info_from_http_response,
 )
 from .utils import (
+    ManagedAuthUpstream,
+    _release_auth_candidate_slot,
+    claim_chatgpt_auth_candidate,
     get_effective_chatgpt_auth_candidates,
     get_max_retry_interval_seconds,
     get_request_retry_limit,
@@ -72,28 +76,26 @@ def normalize_model_name(name: str | None, debug_model: str | None = None) -> st
     return mapping.get(base, base or "gpt-5")
 
 
-def _normalize_backend_service_tier(service_tier: str | None) -> str | None:
+def _normalize_service_tier(service_tier: str | None) -> str | None:
     if not isinstance(service_tier, str) or not service_tier.strip():
         return None
     normalized = service_tier.strip().lower()
     if normalized in ("off", "none", "unset", "default"):
         return None
-    if normalized == "fast":
-        return "priority"
-    return normalized
+    if normalized in ("fast", "flex"):
+        return normalized
+    return None
 
 
 def _prefers_codex_app_server(model: str, service_tier: str | None) -> bool:
-    normalized_tier = str(service_tier or "").strip().lower()
-    return normalized_tier == "fast"
+    normalized_tier = _normalize_service_tier(service_tier)
+    if normalized_tier in ("fast", "flex"):
+        return True
+    _, _, alias_service_tier = split_model_alias(model)
+    return alias_service_tier in ("fast", "flex")
 
 
 def resolve_upstream_mode(configured_mode: str, model: str, service_tier: str | None) -> str:
-    normalized_mode = str(configured_mode or "").strip().lower()
-    if normalized_mode in ("", "default"):
-        normalized_mode = "auto"
-    if normalized_mode != "auto":
-        return normalized_mode
     if _prefers_codex_app_server(model, service_tier):
         return "codex-app-server"
     return "chatgpt-backend"
@@ -120,12 +122,21 @@ def _start_codex_app_server_request(
                 source="chatmock",
                 phase="config",
                 raw_status=500,
-                raw_message="Missing CODEX_APP_SERVER_URL for codex-app-server upstream",
-                raw_body={"message": "Missing CODEX_APP_SERVER_URL for codex-app-server upstream"},
+                raw_message="Missing accelerator upstream URL",
+                raw_body={"message": "Missing accelerator upstream URL"},
             )
         )
 
     manager = current_app.config.get("CODEX_APP_SERVER_MANAGER")
+    preferred_label = None
+    preferred_url = None
+    if isinstance(thread_session, dict):
+        preferred_label = str(thread_session.get("candidate_label") or "").strip() or None
+        preferred_url = str(thread_session.get("candidate_url") or "").strip() or None
+
+    last_error = None
+    last_error_info = None
+    tried_labels: set[str] = set()
     candidates: List[Dict[str, str]] = []
     if manager is not None and hasattr(manager, "get_request_candidates"):
         try:
@@ -136,32 +147,32 @@ def _start_codex_app_server_request(
             candidates = []
     if not candidates:
         candidates = [{"label": "default", "url": app_server_url}]
-
-    preferred_label = None
-    preferred_url = None
-    if isinstance(thread_session, dict):
-        preferred_label = str(thread_session.get("candidate_label") or "").strip() or None
-        preferred_url = str(thread_session.get("candidate_url") or "").strip() or None
-    if preferred_label or preferred_url:
-        preferred_candidates = []
-        other_candidates = []
-        for candidate in candidates:
-            candidate_label = str(candidate.get("label") or "").strip()
-            candidate_url = str(candidate.get("url") or "").strip()
-            if (preferred_label and candidate_label == preferred_label) or (
-                preferred_url and candidate_url == preferred_url
-            ):
-                preferred_candidates.append(candidate)
-            else:
-                other_candidates.append(candidate)
-        candidates = preferred_candidates + other_candidates
-
-    last_error = None
-    last_error_info = None
-    for candidate in candidates:
+    loop_count = max(1, len(candidates))
+    for _ in range(loop_count):
+        if manager is not None and hasattr(manager, "claim_request_candidate"):
+            try:
+                candidate = manager.claim_request_candidate(
+                    excluded_labels=tried_labels,
+                    preferred_label=preferred_label,
+                    preferred_url=preferred_url,
+                )
+            except Exception as exc:
+                if verbose:
+                    print(f"codex app-server pool candidate claim failed: {exc}")
+                candidate = None
+        else:
+            candidate = candidates[0] if candidates else None
+        if not isinstance(candidate, dict):
+            break
         candidate_url = str(candidate.get("url") or "").strip() or app_server_url
         candidate_label = str(candidate.get("label") or "default").strip() or "default"
+        tried_labels.add(candidate_label)
         if is_auth_candidate_blocked(candidate):
+            if manager is not None and hasattr(manager, "release_request_slot"):
+                try:
+                    manager.release_request_slot(candidate_label)
+                except Exception:
+                    pass
             continue
         if verbose:
             print(f"codex app-server candidate -> {candidate_label} @ {candidate_url}")
@@ -243,6 +254,18 @@ def _start_chatgpt_backend_request(
     service_tier: str | None = None,
     verbose: bool = False,
 ):
+    normalized_service_tier = _normalize_service_tier(service_tier)
+    if normalized_service_tier in ("fast", "flex"):
+        return None, build_openai_error_response(
+            build_error_info(
+                source="chatmock",
+                phase="config",
+                raw_status=400,
+                raw_message=f"requested performance mode '{normalized_service_tier}' requires accelerator upstream",
+                raw_body={"message": f"requested performance mode '{normalized_service_tier}' requires accelerator upstream"},
+            )
+        )
+
     auth_candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
     if not auth_candidates:
         resp = make_response(
@@ -293,10 +316,6 @@ def _start_chatgpt_backend_request(
 
     if reasoning_param is not None:
         responses_payload["reasoning"] = reasoning_param
-    backend_service_tier = _normalize_backend_service_tier(service_tier)
-    if isinstance(backend_service_tier, str) and backend_service_tier:
-        responses_payload["service_tier"] = backend_service_tier
-
     if verbose:
         _log_json("OUTBOUND >> ChatGPT Responses API payload", responses_payload)
 
@@ -313,17 +332,27 @@ def _start_chatgpt_backend_request(
                 print(f"Retry round {round_idx}/{request_retry_limit} after {sleep_secs}s")
             time.sleep(sleep_secs)
 
+        tried_labels: set[str] = set()
         round_candidates = get_effective_chatgpt_auth_candidates(ensure_fresh=True)
         if not round_candidates:
             break
 
-        for idx, candidate in enumerate(round_candidates):
+        for idx in range(len(round_candidates)):
+            candidate = claim_chatgpt_auth_candidate(
+                ensure_fresh=True,
+                excluded_labels=tried_labels,
+            )
+            if not isinstance(candidate, dict):
+                break
             access_token = candidate.get("access_token")
             account_id = candidate.get("account_id")
             label = candidate.get("label") or f"candidate-{idx + 1}"
+            tried_labels.add(str(label))
             if is_auth_candidate_blocked(candidate):
+                _release_auth_candidate_slot(candidate)
                 continue
             if not access_token or not account_id:
+                _release_auth_candidate_slot(candidate)
                 continue
 
             headers = {
@@ -346,6 +375,7 @@ def _start_chatgpt_backend_request(
             except requests.RequestException as exc:
                 last_exception = exc
                 mark_chatgpt_auth_result(label, success=False, account_id=account_id, error_message=str(exc))
+                _release_auth_candidate_slot(candidate)
                 if verbose:
                     print(f"Upstream request failed for {label}: {exc}")
                 continue
@@ -359,6 +389,7 @@ def _start_chatgpt_backend_request(
             if should_retry:
                 error_info = error_info_from_http_response("upstream", "http", upstream)
                 handle_chatgpt_candidate_failure(candidate, error_info)
+                _release_auth_candidate_slot(candidate)
                 if has_more_candidates or has_more_rounds:
                     if verbose:
                         print(f"Upstream status {status} for {label}; retrying with next account.")
@@ -369,8 +400,7 @@ def _start_chatgpt_backend_request(
                     continue
                 return upstream, None
 
-            mark_chatgpt_auth_result(label, success=True, status_code=status, account_id=account_id)
-            return upstream, None
+            return ManagedAuthUpstream(upstream, candidate), None
 
     if last_upstream is not None:
         return last_upstream, None
@@ -410,8 +440,8 @@ def start_upstream_request(
     except Exception:
         verbose = False
     selected_mode = resolve_upstream_mode(upstream_mode, model, service_tier)
-    if verbose and upstream_mode == "auto":
-        print(f"auto upstream -> selected {selected_mode} for model {model}")
+    if verbose:
+        print(f"auto path -> selected {public_upstream_name(selected_mode)} for model {model}")
     if selected_mode == "codex-app-server":
         return _start_codex_app_server_request(
             model,
