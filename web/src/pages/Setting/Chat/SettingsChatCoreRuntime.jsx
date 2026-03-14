@@ -132,6 +132,26 @@ export default function SettingsChatCoreRuntime() {
         render: (_, record) => safeText(record.account_id),
       },
       {
+        title: '空间 ID',
+        dataIndex: 'workspace_id',
+        render: (_, record) => safeText(record.workspace_id),
+      },
+      {
+        title: '用户 ID',
+        dataIndex: 'user_id',
+        render: (_, record) => safeText(record.user_id),
+      },
+      {
+        title: '候选键',
+        dataIndex: 'candidate_uid',
+        render: (_, record) => safeText(record.candidate_uid),
+      },
+      {
+        title: 'Fast 状态',
+        dataIndex: 'fast_status',
+        render: (_, record) => safeText(record.fast_status),
+      },
+      {
         title: '状态',
         dataIndex: 'last_status',
         render: (_, record) => formatAccountStatus(record),

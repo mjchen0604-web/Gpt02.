@@ -74,6 +74,8 @@ export const DEFAULT_CONFIG = {
   inputs: {
     model: 'gpt-4o',
     group: '',
+    promptMode: 'default',
+    systemPrompt: '',
     temperature: 0.7,
     top_p: 1,
     frequency_penalty: 0,
@@ -90,10 +92,11 @@ export const DEFAULT_CONFIG = {
     presence_penalty: true,
     seed: false,
   },
-  systemPrompt: '',
 };
 
 export const PLAYGROUND_USER_INPUT_KEYS = [
+  'promptMode',
+  'systemPrompt',
   'temperature',
   'top_p',
   'frequency_penalty',

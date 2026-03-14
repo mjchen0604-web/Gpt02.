@@ -490,6 +490,46 @@ def _derive_account_id(id_token: Optional[str]) -> Optional[str]:
     return None
 
 
+def _extract_auth_claims(*tokens: Optional[str]) -> Dict[str, Any]:
+    for token in tokens:
+        if not isinstance(token, str) or not token:
+            continue
+        claims = parse_jwt_claims(token) or {}
+        auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else None
+        if isinstance(auth_claims, dict):
+            return auth_claims
+    return {}
+
+
+def _derive_workspace_id(id_token: Optional[str], access_token: Optional[str] = None) -> Optional[str]:
+    auth_claims = _extract_auth_claims(id_token, access_token)
+    workspace_id = auth_claims.get("chatgpt_account_id")
+    if isinstance(workspace_id, str) and workspace_id:
+        return workspace_id
+    return None
+
+
+def _derive_user_id(id_token: Optional[str], access_token: Optional[str] = None) -> Optional[str]:
+    auth_claims = _extract_auth_claims(id_token, access_token)
+    for key in ("chatgpt_user_id", "user_id"):
+        value = auth_claims.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _build_candidate_uid(workspace_id: Optional[str], user_id: Optional[str]) -> Optional[str]:
+    normalized_workspace = workspace_id.strip() if isinstance(workspace_id, str) else ""
+    normalized_user = user_id.strip() if isinstance(user_id, str) else ""
+    if normalized_workspace and normalized_user:
+        return f"{normalized_workspace}:{normalized_user}"
+    if normalized_user:
+        return normalized_user
+    if normalized_workspace:
+        return normalized_workspace
+    return None
+
+
 def _parse_iso8601(value: str) -> Optional[datetime.datetime]:
     try:
         if value.endswith("Z"):
@@ -557,49 +597,54 @@ def _remove_label_state(label: str) -> None:
         _AUTH_POOL_STATE.pop(label, None)
 
 
-def _mark_invalid_auth_candidate(*, label: str = "", account_id: str = "") -> None:
+def _mark_invalid_auth_candidate(*, label: str = "", account_id: str = "", candidate_uid: str = "") -> None:
     with _INVALID_AUTH_LOCK:
         if isinstance(label, str) and label.strip():
             _INVALID_AUTH_LABELS.add(label.strip())
-        if isinstance(account_id, str) and account_id.strip():
-            _INVALID_AUTH_ACCOUNT_IDS.add(account_id.strip())
+        identity_key = candidate_uid if isinstance(candidate_uid, str) and candidate_uid.strip() else account_id
+        if isinstance(identity_key, str) and identity_key.strip():
+            _INVALID_AUTH_ACCOUNT_IDS.add(identity_key.strip())
 
 
-def _clear_invalid_auth_candidate(*, label: str = "", account_id: str = "") -> None:
+def _clear_invalid_auth_candidate(*, label: str = "", account_id: str = "", candidate_uid: str = "") -> None:
     with _INVALID_AUTH_LOCK:
         if isinstance(label, str) and label.strip():
             _INVALID_AUTH_LABELS.discard(label.strip())
-        if isinstance(account_id, str) and account_id.strip():
-            _INVALID_AUTH_ACCOUNT_IDS.discard(account_id.strip())
+        identity_key = candidate_uid if isinstance(candidate_uid, str) and candidate_uid.strip() else account_id
+        if isinstance(identity_key, str) and identity_key.strip():
+            _INVALID_AUTH_ACCOUNT_IDS.discard(identity_key.strip())
 
 
-def _is_invalid_auth_candidate(*, label: str = "", account_id: str = "") -> bool:
+def _is_invalid_auth_candidate(*, label: str = "", account_id: str = "", candidate_uid: str = "") -> bool:
     with _INVALID_AUTH_LOCK:
         if isinstance(label, str) and label.strip() and label.strip() in _INVALID_AUTH_LABELS:
             return True
-        if isinstance(account_id, str) and account_id.strip() and account_id.strip() in _INVALID_AUTH_ACCOUNT_IDS:
+        identity_key = candidate_uid if isinstance(candidate_uid, str) and candidate_uid.strip() else account_id
+        if isinstance(identity_key, str) and identity_key.strip() and identity_key.strip() in _INVALID_AUTH_ACCOUNT_IDS:
             return True
     return False
 
 
-def _set_account_cooldown(*, account_id: str = "", until_ts: float = 0.0) -> None:
-    if not isinstance(account_id, str) or not account_id.strip():
+def _set_account_cooldown(*, account_id: str = "", candidate_uid: str = "", until_ts: float = 0.0) -> None:
+    identity_key = candidate_uid if isinstance(candidate_uid, str) and candidate_uid.strip() else account_id
+    if not isinstance(identity_key, str) or not identity_key.strip():
         return
     with _AUTH_ACCOUNT_COOLDOWN_LOCK:
         if until_ts > 0:
-            _AUTH_ACCOUNT_COOLDOWN_UNTIL[account_id.strip()] = float(until_ts)
+            _AUTH_ACCOUNT_COOLDOWN_UNTIL[identity_key.strip()] = float(until_ts)
         else:
-            _AUTH_ACCOUNT_COOLDOWN_UNTIL.pop(account_id.strip(), None)
+            _AUTH_ACCOUNT_COOLDOWN_UNTIL.pop(identity_key.strip(), None)
 
 
-def _get_account_cooldown(account_id: str) -> float:
-    if not isinstance(account_id, str) or not account_id.strip():
+def _get_account_cooldown(account_id: str = "", candidate_uid: str = "") -> float:
+    identity_key = candidate_uid if isinstance(candidate_uid, str) and candidate_uid.strip() else account_id
+    if not isinstance(identity_key, str) or not identity_key.strip():
         return 0.0
     with _AUTH_ACCOUNT_COOLDOWN_LOCK:
-        until_ts = float(_AUTH_ACCOUNT_COOLDOWN_UNTIL.get(account_id.strip()) or 0.0)
+        until_ts = float(_AUTH_ACCOUNT_COOLDOWN_UNTIL.get(identity_key.strip()) or 0.0)
     now = time.time()
     if until_ts <= now:
-        _set_account_cooldown(account_id=account_id, until_ts=0.0)
+        _set_account_cooldown(account_id=account_id, candidate_uid=candidate_uid, until_ts=0.0)
         return 0.0
     return until_ts
 
@@ -609,9 +654,10 @@ def is_auth_candidate_blocked(candidate: Dict[str, Any]) -> bool:
         return True
     label = str(candidate.get("label") or "").strip()
     account_id = str(candidate.get("account_id") or "").strip()
-    if _is_invalid_auth_candidate(label=label, account_id=account_id):
+    candidate_uid = str(candidate.get("candidate_uid") or "").strip()
+    if _is_invalid_auth_candidate(label=label, account_id=account_id, candidate_uid=candidate_uid):
         return True
-    cooldown_until = _get_account_cooldown(account_id)
+    cooldown_until = _get_account_cooldown(account_id=account_id, candidate_uid=candidate_uid)
     if cooldown_until > time.time():
         return True
     return False
@@ -629,6 +675,26 @@ def _account_id_from_auth_obj(auth_obj: Dict[str, Any]) -> str:
     if not isinstance(account_id, str) or not account_id:
         account_id = _derive_account_id(id_token) or ""
     return str(account_id).strip()
+
+
+def _workspace_id_from_auth_obj(auth_obj: Dict[str, Any]) -> str:
+    access_token, account_id, id_token, _, _ = _extract_tokens_from_auth_obj(auth_obj)
+    workspace_id = _derive_workspace_id(id_token, access_token)
+    if not isinstance(workspace_id, str) or not workspace_id:
+        workspace_id = account_id or ""
+    return str(workspace_id).strip()
+
+
+def _user_id_from_auth_obj(auth_obj: Dict[str, Any]) -> str:
+    access_token, _, id_token, _, _ = _extract_tokens_from_auth_obj(auth_obj)
+    user_id = _derive_user_id(id_token, access_token) or ""
+    return str(user_id).strip()
+
+
+def _candidate_uid_from_auth_obj(auth_obj: Dict[str, Any]) -> str:
+    workspace_id = _workspace_id_from_auth_obj(auth_obj)
+    user_id = _user_id_from_auth_obj(auth_obj)
+    return _build_candidate_uid(workspace_id, user_id) or ""
 
 
 def _remove_auth_from_pool_file(pool_path: str, index: int) -> bool:
@@ -663,18 +729,7 @@ def remove_chatgpt_auth_candidate(candidate: Dict[str, Any], *, reason: str = ""
     success = False
     if source_kind in ("auth_file", "default_auth"):
         current_paths = _parse_auth_files_env()
-        paths_to_remove: List[str] = []
-        if source_path:
-            paths_to_remove.append(source_path)
-        if account_id:
-            for path in current_paths:
-                if path in paths_to_remove:
-                    continue
-                auth_obj = _read_json_file(path)
-                if not isinstance(auth_obj, dict):
-                    continue
-                if _account_id_from_auth_obj(auth_obj) == account_id:
-                    paths_to_remove.append(path)
+        paths_to_remove: List[str] = [source_path] if source_path else []
         if paths_to_remove:
             updated = [item for item in current_paths if item not in paths_to_remove]
             if updated:
@@ -756,10 +811,16 @@ def _candidate_from_auth_obj(
         return None, changed
     if not (isinstance(account_id, str) and account_id):
         return None, changed
+    workspace_id = _derive_workspace_id(id_token, access_token) or account_id
+    user_id = _derive_user_id(id_token, access_token) or ""
+    candidate_uid = _build_candidate_uid(workspace_id, user_id) or account_id
     return {
         "label": label,
         "access_token": access_token,
         "account_id": account_id,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "candidate_uid": candidate_uid,
         "source_kind": source_kind or "",
         "source_path": source_path or "",
         "source_index": source_index,
@@ -778,7 +839,8 @@ def _load_auth_candidates_from_auth_files(ensure_fresh: bool = True) -> List[Dic
         filename = os.path.basename(path)
         label = f"{dirname}/{filename}" if dirname else (filename or f"file-{idx + 1}")
         account_id = _account_id_from_auth_obj(auth_obj)
-        if _is_invalid_auth_candidate(label=label, account_id=account_id):
+        candidate_uid = _candidate_uid_from_auth_obj(auth_obj)
+        if _is_invalid_auth_candidate(label=label, account_id=account_id, candidate_uid=candidate_uid):
             continue
         candidate, changed = _candidate_from_auth_obj(
             auth_obj,
@@ -817,7 +879,8 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
         if not label:
             label = f"pool-{idx + 1}"
         account_id = _account_id_from_auth_obj(account_obj)
-        if _is_invalid_auth_candidate(label=label, account_id=account_id):
+        candidate_uid = _candidate_uid_from_auth_obj(account_obj)
+        if _is_invalid_auth_candidate(label=label, account_id=account_id, candidate_uid=candidate_uid):
             continue
         candidate, account_changed = _candidate_from_auth_obj(
             account_obj,
@@ -836,21 +899,22 @@ def _load_auth_candidates_from_pool_file(ensure_fresh: bool = True) -> List[Dict
     return out
 
 
-def _dedupe_candidates_by_account_id(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _dedupe_candidates_by_identity(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     deduped: List[Dict[str, Any]] = []
-    seen_account_ids: set[str] = set()
+    seen_identity_keys: set[str] = set()
     seen_labels: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
         label = str(candidate.get("label") or "").strip()
         account_id = str(candidate.get("account_id") or "").strip()
-        dedupe_key = account_id or label
+        candidate_uid = str(candidate.get("candidate_uid") or "").strip()
+        dedupe_key = candidate_uid or account_id or label
         if not dedupe_key:
             continue
-        if dedupe_key in seen_account_ids or label in seen_labels:
+        if dedupe_key in seen_identity_keys or label in seen_labels:
             continue
-        seen_account_ids.add(dedupe_key)
+        seen_identity_keys.add(dedupe_key)
         if label:
             seen_labels.add(label)
         deduped.append(candidate)
@@ -870,17 +934,29 @@ def get_effective_chatgpt_auth_candidates(ensure_fresh: bool = True) -> List[Dic
             and access_token
             and isinstance(account_id, str)
             and account_id
-            and not _is_invalid_auth_candidate(label="default", account_id=account_id)
+            and not _is_invalid_auth_candidate(
+                label="default",
+                account_id=account_id,
+                candidate_uid=_build_candidate_uid(
+                    _derive_workspace_id(id_token, access_token) or account_id,
+                    _derive_user_id(id_token, access_token) or "",
+                ) or account_id,
+            )
         ):
+            workspace_id = _derive_workspace_id(id_token, access_token) or account_id
+            user_id = _derive_user_id(id_token, access_token) or ""
             candidates = [{
                 "label": "default",
                 "access_token": access_token,
                 "account_id": account_id,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "candidate_uid": _build_candidate_uid(workspace_id, user_id) or account_id,
                 "source_kind": "default_auth",
                 "source_path": _find_auth_file_path("auth.json") or "auth.json",
                 "source_index": None,
             }]
-    candidates = _dedupe_candidates_by_account_id(candidates)
+    candidates = _dedupe_candidates_by_identity(candidates)
     candidates = _apply_account_cooldown(candidates)
     return _ordered_candidates_by_strategy(candidates)
 
@@ -1100,6 +1176,7 @@ def mark_chatgpt_auth_result(
     success: bool,
     status_code: int | None = None,
     account_id: str | None = None,
+    candidate_uid: str | None = None,
     error_message: str | None = None,
     classification: str | None = None,
     cooldown_seconds: int | None = None,
@@ -1114,8 +1191,8 @@ def mark_chatgpt_auth_result(
     with _AUTH_POOL_STATE_LOCK:
         state = dict(_AUTH_POOL_STATE.get(label) or {})
         if success:
-            _clear_invalid_auth_candidate(label=label)
-            _set_account_cooldown(account_id=account_id or "", until_ts=0.0)
+            _clear_invalid_auth_candidate(label=label, candidate_uid=candidate_uid or "")
+            _set_account_cooldown(account_id=account_id or "", candidate_uid=candidate_uid or "", until_ts=0.0)
             _set_auth_pool_state(
                 label,
                 status="ready",
@@ -1180,6 +1257,7 @@ def mark_chatgpt_auth_result(
 def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, Any]) -> str:
     label = str(candidate.get("label") or "").strip()
     account_id = str(candidate.get("account_id") or "").strip()
+    candidate_uid = str(candidate.get("candidate_uid") or "").strip()
     classification = classify_error(info)
     raw_status = info.get("raw_status") if isinstance(info.get("raw_status"), int) else None
     raw_code = info.get("raw_code") if isinstance(info.get("raw_code"), str) else None
@@ -1191,12 +1269,13 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
 
     if effective_classification in ("insufficient_balance", "rate_limited"):
         cooldown_until = float(retry_at_until) if retry_at_until is not None else time.time() + float(5 * 60 * 60)
-        _set_account_cooldown(account_id=account_id, until_ts=cooldown_until)
+        _set_account_cooldown(account_id=account_id, candidate_uid=candidate_uid, until_ts=cooldown_until)
         mark_chatgpt_auth_result(
             label,
             success=False,
             status_code=raw_status,
             account_id=account_id,
+            candidate_uid=candidate_uid,
             error_message=raw_message,
             classification=effective_classification,
             cooldown_seconds=None if retry_at_until is not None else 5 * 60 * 60,
@@ -1207,7 +1286,7 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
         return effective_classification
 
     if effective_classification == "account_invalid":
-        _mark_invalid_auth_candidate(label=label, account_id=account_id)
+        _mark_invalid_auth_candidate(label=label, account_id=account_id, candidate_uid=candidate_uid)
         remove_chatgpt_auth_candidate(candidate, reason=raw_message or "Account invalid")
         return effective_classification
 
@@ -1216,6 +1295,7 @@ def handle_chatgpt_candidate_failure(candidate: Dict[str, Any], info: Dict[str, 
         success=False,
         status_code=raw_status,
         account_id=account_id,
+        candidate_uid=candidate_uid,
         error_message=raw_message,
         classification=effective_classification,
         raw_code=raw_code,
@@ -1274,6 +1354,9 @@ def _auth_record_from_obj(
     access_token, account_id, id_token, refresh_token, last_refresh = _extract_tokens_from_auth_obj(auth_obj)
     if not isinstance(account_id, str) or not account_id:
         account_id = _derive_account_id(id_token)
+    workspace_id = _derive_workspace_id(id_token, access_token) or account_id or ""
+    user_id = _derive_user_id(id_token, access_token) or ""
+    candidate_uid = _build_candidate_uid(workspace_id, user_id) or account_id or ""
     state = _state_for_label(label)
     id_claims = parse_jwt_claims(id_token) or {}
     access_claims = parse_jwt_claims(access_token) or {}
@@ -1282,6 +1365,9 @@ def _auth_record_from_obj(
         "label": label,
         "source": source,
         "account_id": _compact_account_id(account_id),
+        "workspace_id": _compact_account_id(workspace_id),
+        "user_id": _compact_account_id(user_id),
+        "candidate_uid": _compact_account_id(candidate_uid),
         "email": id_claims.get("email") or id_claims.get("preferred_username") or "",
         "plan": str(plan_raw).lower() if isinstance(plan_raw, str) else "",
         "last_refresh": last_refresh if isinstance(last_refresh, str) else "",

@@ -19,6 +19,9 @@ from .codex_app_server import CodexAppServerError
 from .surface_names import redact_internal_route_terms
 from .upstream_errors import classify_error, error_info_from_event_response, extract_retry_after_unlock_ts
 from .utils import (
+    _build_candidate_uid,
+    _derive_user_id,
+    _derive_workspace_id,
     get_max_inflight_per_account,
     handle_chatgpt_candidate_failure,
     mark_chatgpt_auth_result,
@@ -100,6 +103,18 @@ def _account_id_from_payload(payload: dict[str, Any] | None) -> str:
     if not account_id and isinstance(payload.get("account_id"), str):
         account_id = payload.get("account_id") or ""
     return account_id.strip()
+
+
+def _candidate_uid_from_payload(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    tokens = payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {}
+    account_id = _account_id_from_payload(payload)
+    id_token = tokens.get("id_token") if isinstance(tokens.get("id_token"), str) else None
+    access_token = tokens.get("access_token") if isinstance(tokens.get("access_token"), str) else None
+    workspace_id = _derive_workspace_id(id_token, access_token) or account_id
+    user_id = _derive_user_id(id_token, access_token) or ""
+    return (_build_candidate_uid(workspace_id, user_id) or account_id or "").strip()
 
 
 def _instance_label_for_auth_path(path: Path, *, fallback: str) -> str:
@@ -563,15 +578,15 @@ class CodexAppServerPoolManager:
         paths = auth_files if auth_files is not None else _parse_auth_files_env()
         entries: list[dict[str, Any]] = []
         seen_labels: set[str] = set()
-        seen_account_ids: set[str] = set()
+        seen_candidate_uids: set[str] = set()
 
         for idx, raw in enumerate(paths):
             auth_path = Path(raw).expanduser()
             if not auth_path.exists():
                 continue
             payload = _read_auth_payload(auth_path)
-            account_id = _account_id_from_payload(payload)
-            if account_id and account_id in seen_account_ids:
+            candidate_uid = _candidate_uid_from_payload(payload)
+            if candidate_uid and candidate_uid in seen_candidate_uids:
                 continue
             label = _instance_label_for_auth_path(auth_path, fallback=f"acc{idx + 1:02d}")
             base_label = label
@@ -580,8 +595,8 @@ class CodexAppServerPoolManager:
                 label = f"{base_label}-{suffix}"
                 suffix += 1
             seen_labels.add(label)
-            if account_id:
-                seen_account_ids.add(account_id)
+            if candidate_uid:
+                seen_candidate_uids.add(candidate_uid)
             entries.append(
                 {
                     "label": label,
@@ -871,7 +886,6 @@ class CodexAppServerPoolManager:
         statuses = self.status_all()
         now = time.time()
         available: list[str] = []
-        saturated: list[str] = []
         limit = get_max_inflight_per_account()
         for status in statuses:
             label = status.get("label")
@@ -886,12 +900,8 @@ class CodexAppServerPoolManager:
             inflight = int(state.get("inflight") or 0)
             if inflight < limit:
                 available.append(label)
-            else:
-                saturated.append(label)
         if available:
             return self._ordered_labels(available)
-        if saturated:
-            return self._ordered_labels(saturated)
         return []
 
     def get_request_candidates(self) -> list[dict[str, str]]:
@@ -910,6 +920,7 @@ class CodexAppServerPoolManager:
                 "url": instance.url,
                 "auth_path": str(instance.auth_path),
                 "account_id": _account_id_from_payload(payload),
+                "candidate_uid": _candidate_uid_from_payload(payload),
             })
         return out
 
@@ -995,6 +1006,7 @@ class CodexAppServerPoolManager:
         auth_path = str(instance.source_auth_path) if instance is not None else ""
         payload = _read_auth_payload(Path(auth_path)) if auth_path else None
         account_id = _account_id_from_payload(payload)
+        candidate_uid = _candidate_uid_from_payload(payload)
         if instance is not None:
             try:
                 instance.stop()
@@ -1007,6 +1019,7 @@ class CodexAppServerPoolManager:
                 "source_path": auth_path,
                 "source_index": None,
                 "account_id": account_id,
+                "candidate_uid": candidate_uid,
             },
             reason=reason,
         )
@@ -1039,6 +1052,7 @@ class CodexAppServerPoolManager:
         instance = self._instances.get(label)
         payload = _read_auth_payload(instance.source_auth_path) if instance is not None else None
         account_id = _account_id_from_payload(payload)
+        candidate_uid = _candidate_uid_from_payload(payload)
         with self._lock:
             state = dict(self._request_state.get(label) or {})
             state["requests_total"] = int(state.get("requests_total") or 0) + 1
@@ -1054,7 +1068,13 @@ class CodexAppServerPoolManager:
                 state["status"] = "ready"
                 state["last_classification"] = "ready"
                 self._request_state[label] = state
-                mark_chatgpt_auth_result(label, success=True, status_code=status_code, account_id=account_id)
+                mark_chatgpt_auth_result(
+                    label,
+                    success=True,
+                    status_code=status_code,
+                    account_id=account_id,
+                    candidate_uid=candidate_uid,
+                )
                 self._append_log(f"request result: {label} success")
                 return
             if effective_classification in ("insufficient_balance", "rate_limited"):
@@ -1078,6 +1098,7 @@ class CodexAppServerPoolManager:
                     success=False,
                     status_code=status_code,
                     account_id=account_id,
+                    candidate_uid=candidate_uid,
                     error_message=error_message,
                     classification=effective_classification,
                     cooldown_seconds=None if retry_at_until is not None else 5 * 60 * 60,
@@ -1118,6 +1139,7 @@ class CodexAppServerPoolManager:
                     success=False,
                     status_code=status_code,
                     account_id=account_id,
+                    candidate_uid=candidate_uid,
                     error_message=error_message,
                     classification=effective_classification,
                     raw_code=(error_info or {}).get("raw_code"),

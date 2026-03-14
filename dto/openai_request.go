@@ -30,6 +30,8 @@ type GeneralOpenAIRequest struct {
 	Model               string            `json:"model,omitempty"`
 	Messages            []Message         `json:"messages,omitempty"`
 	Prompt              any               `json:"prompt,omitempty"`
+	PromptMode          string            `json:"prompt_mode,omitempty"`
+	SystemPrompt        string            `json:"system_prompt,omitempty"`
 	Prefix              any               `json:"prefix,omitempty"`
 	Suffix              any               `json:"suffix,omitempty"`
 	Stream              *bool             `json:"stream,omitempty"`
