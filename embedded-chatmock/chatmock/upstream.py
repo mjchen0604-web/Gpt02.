@@ -152,10 +152,28 @@ def _start_codex_app_server_request(
             candidates = []
     if not candidates:
         candidates = [{"label": "default", "url": app_server_url}]
+
+    if preferred_label or preferred_url:
+        preferred_candidates = []
+        other_candidates = []
+        for candidate in candidates:
+            candidate_label = str(candidate.get("label") or "").strip()
+            candidate_url = str(candidate.get("url") or "").strip()
+            if (preferred_label and candidate_label == preferred_label) or (
+                preferred_url and candidate_url == preferred_url
+            ):
+                preferred_candidates.append(candidate)
+            else:
+                other_candidates.append(candidate)
+        candidates = preferred_candidates + other_candidates
+
+    # Keep fast/flex on a direct app-server path so single-auth and low-latency
+    # runs do not pay extra candidate claim/inflight overhead.
+    direct_candidate_walk = _normalize_service_tier(service_tier) in ("fast", "flex")
     loop_count = max(1, len(candidates))
     for _ in range(loop_count):
         candidate = None
-        if manager is not None and hasattr(manager, "claim_request_candidate"):
+        if not direct_candidate_walk and manager is not None and hasattr(manager, "claim_request_candidate"):
             try:
                 candidate = manager.claim_request_candidate(
                     excluded_labels=tried_labels,
@@ -179,7 +197,7 @@ def _start_codex_app_server_request(
         candidate_label = str(candidate.get("label") or "default").strip() or "default"
         tried_labels.add(candidate_label)
         if is_auth_candidate_blocked(candidate):
-            if manager is not None and hasattr(manager, "release_request_slot"):
+            if not direct_candidate_walk and manager is not None and hasattr(manager, "release_request_slot"):
                 try:
                     manager.release_request_slot(candidate_label)
                 except Exception:

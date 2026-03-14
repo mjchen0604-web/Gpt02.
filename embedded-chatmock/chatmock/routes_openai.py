@@ -484,8 +484,6 @@ def _consume_text_completion_nonstream(
 def chat_completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
     verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
-    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
-    expose_thread_ids = bool(current_app.config.get("EXPOSE_THREAD_IDS"))
     reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
     reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
     reasoning_compat = current_app.config.get("REASONING_COMPAT", "think-tags")
@@ -822,11 +820,6 @@ def chat_completions() -> Response:
             is_stream=is_stream,
             upstream=upstream,
         )
-        if expose_service_tier and service_tier:
-            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-        if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-            resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-            resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -862,11 +855,8 @@ def chat_completions() -> Response:
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        completion["thread_id"] = upstream.chatmock_thread_id
-        completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     if observed_service_tier:
-        completion["performance_mode"] = public_service_tier_name(observed_service_tier)
+        completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/chat/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
@@ -881,13 +871,6 @@ def chat_completions() -> Response:
         upstream=upstream,
         extra={"response_id": response_id},
     )
-    if expose_service_tier and service_tier:
-        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-    if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-        resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -897,8 +880,6 @@ def chat_completions() -> Response:
 def completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
     verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
-    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
-    expose_thread_ids = bool(current_app.config.get("EXPOSE_THREAD_IDS"))
     debug_model = current_app.config.get("DEBUG_MODEL")
     reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
     reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
@@ -1131,11 +1112,6 @@ def completions() -> Response:
             is_stream=stream_req,
             upstream=upstream,
         )
-        if expose_service_tier and service_tier:
-            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-        if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-            resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-            resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -1167,11 +1143,8 @@ def completions() -> Response:
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        completion["thread_id"] = upstream.chatmock_thread_id
-        completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     if observed_service_tier:
-        completion["performance_mode"] = public_service_tier_name(observed_service_tier)
+        completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
@@ -1186,13 +1159,6 @@ def completions() -> Response:
         upstream=upstream,
         extra={"response_id": response_id},
     )
-    if expose_service_tier and service_tier:
-        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-    if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-        resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp

@@ -15,7 +15,6 @@ from .reasoning import (
     build_reasoning_param,
     extract_reasoning_from_model_name,
     extract_service_tier_from_model_name,
-    public_service_tier_name,
 )
 from .transform import convert_ollama_messages, normalize_ollama_tools
 from .upstream_errors import (
@@ -358,7 +357,6 @@ def ollama_chat() -> Response:
     model_reasoning = extract_reasoning_from_model_name(model)
     normalized_model = normalize_model_name(model)
     service_tier = _resolve_service_tier(payload, model)
-    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
     attempt_limit = _upstream_attempt_limit(stream_req, normalized_model, service_tier)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
@@ -693,8 +691,6 @@ def ollama_chat() -> Response:
             status=200,
             mimetype="application/x-ndjson",
         )
-        if expose_service_tier and service_tier:
-            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -802,15 +798,11 @@ def ollama_chat() -> Response:
         "done_reason": "tool_calls" if tool_calls else "stop",
     }
     if observed_service_tier:
-        out_json["performance_mode"] = public_service_tier_name(observed_service_tier)
+        out_json["service_tier"] = observed_service_tier
     out_json.update(_OLLAMA_FAKE_EVAL)
     if verbose:
         _log_json("OUT POST /api/chat", out_json)
     resp = make_response(jsonify(out_json), 200)
-    if expose_service_tier and service_tier:
-        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-    if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
