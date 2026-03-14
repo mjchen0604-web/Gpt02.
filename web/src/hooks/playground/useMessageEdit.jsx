@@ -103,6 +103,10 @@ export const useMessageEdit = (
                   inputs,
                   parameterEnabled,
                 );
+                payload.prompt_mode = inputs.promptMode || 'default';
+                if (inputs.promptMode === 'native' && inputs.systemPrompt?.trim()) {
+                  payload.system_prompt = inputs.systemPrompt.trim();
+                }
                 setMessage((prevMsg) => [
                   ...prevMsg,
                   createLoadingAssistantMessage(),

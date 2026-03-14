@@ -333,6 +333,62 @@ var defaultCompletionRatio = map[string]float64{
 	"gpt-image-1":    8,
 }
 
+func addTieredModelRatio(target map[string]float64, base string, low, medium, high, xhigh float64) {
+	target[base] = medium
+	target[base+"-low"] = low
+	target[base+"-medium"] = medium
+	target[base+"-high"] = high
+	target[base+"-xhigh"] = xhigh
+}
+
+func addTieredCompletionRatio(target map[string]float64, base string, ratio float64) {
+	target[base] = ratio
+	target[base+"-low"] = ratio
+	target[base+"-medium"] = ratio
+	target[base+"-high"] = ratio
+	target[base+"-xhigh"] = ratio
+}
+
+func seedDefaultGPTPricing() {
+	addTieredModelRatio(defaultModelRatio, "gpt-5.4", 9.375, 12.5, 15.625, 18.75)
+	addTieredModelRatio(defaultModelRatio, "gpt-5.4-fast", 28.125, 37.5, 46.875, 56.25)
+
+	addTieredModelRatio(defaultModelRatio, "gpt-5.3-codex", 6.565, 8.75, 10.94, 13.125)
+	addTieredModelRatio(defaultModelRatio, "gpt-5.2-codex", 6.565, 8.75, 10.94, 13.125)
+	addTieredModelRatio(defaultModelRatio, "gpt-5.2", 6.565, 8.75, 10.94, 13.125)
+
+	addTieredModelRatio(defaultModelRatio, "gpt-5.1", 4.69, 6.25, 7.815, 9.375)
+	addTieredModelRatio(defaultModelRatio, "gpt-5", 4.69, 6.25, 7.815, 9.375)
+	addTieredModelRatio(defaultModelRatio, "gpt-5-codex", 4.69, 6.25, 7.815, 9.375)
+	addTieredModelRatio(defaultModelRatio, "gpt-5.1-codex", 4.69, 6.25, 7.815, 9.375)
+	addTieredModelRatio(defaultModelRatio, "gpt-5.1-codex-max", 4.69, 6.25, 7.815, 9.375)
+
+	addTieredModelRatio(defaultModelRatio, "gpt-5-mini", 0.94, 1.25, 1.565, 1.875)
+	addTieredModelRatio(defaultModelRatio, "gpt-5.1-codex-mini", 0.94, 1.25, 1.565, 1.875)
+
+	addTieredCompletionRatio(defaultCompletionRatio, "gpt-5.4", 9.0/7.0)
+	addTieredCompletionRatio(defaultCompletionRatio, "gpt-5.4-fast", 9.0/7.0)
+
+	for _, base := range []string{
+		"gpt-5.3-codex",
+		"gpt-5.2-codex",
+		"gpt-5.2",
+		"gpt-5.1",
+		"gpt-5",
+		"gpt-5-codex",
+		"gpt-5.1-codex",
+		"gpt-5.1-codex-max",
+		"gpt-5-mini",
+		"gpt-5.1-codex-mini",
+	} {
+		addTieredCompletionRatio(defaultCompletionRatio, base, 12.0/7.0)
+	}
+}
+
+func init() {
+	seedDefaultGPTPricing()
+}
+
 // InitRatioSettings initializes all model related settings maps
 func InitRatioSettings() {
 	modelPriceMap.AddAll(defaultModelPrice)

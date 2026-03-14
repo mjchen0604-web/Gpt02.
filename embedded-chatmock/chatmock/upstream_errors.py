@@ -366,15 +366,7 @@ def normalized_error_code(info: Mapping[str, Any]) -> str | None:
 def normalized_error_message(info: Mapping[str, Any]) -> str:
     raw_message = _compact_string(info.get("raw_message"))
     category = classify_error(info)
-    expose_internal = (os.getenv("CHATMOCK_EXPOSE_INTERNAL_ERROR_DETAILS") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
     if raw_message:
-        if expose_internal:
-            return raw_message
         lowered = raw_message.lower()
         if "deactivated_workspace" in lowered:
             return "Account unavailable"
@@ -418,23 +410,6 @@ def normalized_error_payload(info: Mapping[str, Any]) -> dict[str, Any]:
         "param": None,
         "code": normalized_error_code(info),
     }
-    expose_internal = (os.getenv("CHATMOCK_EXPOSE_INTERNAL_ERROR_DETAILS") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-    if expose_internal:
-        payload.update(
-            {
-                "raw_status": info.get("raw_status"),
-                "raw_code": info.get("raw_code"),
-                "raw_message": info.get("raw_message"),
-                "raw_body": _jsonable(info.get("raw_body")),
-                "source": info.get("source"),
-                "phase": info.get("phase"),
-            }
-        )
     return payload
 
 

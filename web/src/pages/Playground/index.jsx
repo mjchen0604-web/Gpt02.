@@ -319,7 +319,12 @@ const Playground = () => {
           }
         }
       }
-      return buildApiPayload(nextMessages, '', inputs, parameterEnabled);
+      const payload = buildApiPayload(nextMessages, '', inputs, parameterEnabled);
+      payload.prompt_mode = inputs.promptMode || 'default';
+      if (inputs.promptMode === 'native' && inputs.systemPrompt?.trim()) {
+        payload.system_prompt = inputs.systemPrompt.trim();
+      }
+      return payload;
     } catch (error) {
       console.error('构造预览请求体失败:', error);
       return null;
@@ -383,6 +388,10 @@ const Playground = () => {
           inputs,
           parameterEnabled,
         );
+        payload.prompt_mode = inputs.promptMode || 'default';
+        if (inputs.promptMode === 'native' && inputs.systemPrompt?.trim()) {
+          payload.system_prompt = inputs.systemPrompt.trim();
+        }
         sendRequest(payload, inputs.stream);
 
         if (inputs.imageEnabled) {

@@ -94,6 +94,34 @@ var defaultCreateCacheRatio = map[string]float64{
 	"claude-opus-4-6-low":                 1.25,
 }
 
+func addTieredCacheRatio(target map[string]float64, base string, ratio float64) {
+	target[base] = ratio
+	target[base+"-low"] = ratio
+	target[base+"-medium"] = ratio
+	target[base+"-high"] = ratio
+	target[base+"-xhigh"] = ratio
+}
+
+func init() {
+	addTieredCacheRatio(defaultCacheRatio, "gpt-5.4", 0.0572)
+	addTieredCacheRatio(defaultCacheRatio, "gpt-5.4-fast", 0.0572)
+
+	for _, base := range []string{
+		"gpt-5.3-codex",
+		"gpt-5.2-codex",
+		"gpt-5.2",
+		"gpt-5.1",
+		"gpt-5",
+		"gpt-5-codex",
+		"gpt-5.1-codex",
+		"gpt-5.1-codex-max",
+		"gpt-5-mini",
+		"gpt-5.1-codex-mini",
+	} {
+		addTieredCacheRatio(defaultCacheRatio, base, 0.057)
+	}
+}
+
 //var defaultCreateCacheRatio = map[string]float64{}
 
 var cacheRatioMap = types.NewRWMap[string, float64]()

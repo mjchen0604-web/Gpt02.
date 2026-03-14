@@ -96,6 +96,11 @@ def _prefers_codex_app_server(model: str, service_tier: str | None) -> bool:
 
 
 def resolve_upstream_mode(configured_mode: str, model: str, service_tier: str | None) -> str:
+    normalized_mode = str(configured_mode or "").strip().lower()
+    if normalized_mode in ("", "default"):
+        normalized_mode = "auto"
+    if normalized_mode != "auto":
+        return normalized_mode
     if _prefers_codex_app_server(model, service_tier):
         return "codex-app-server"
     return "chatgpt-backend"
@@ -147,9 +152,25 @@ def _start_codex_app_server_request(
             candidates = []
     if not candidates:
         candidates = [{"label": "default", "url": app_server_url}]
+
+    if preferred_label or preferred_url:
+        preferred_candidates = []
+        other_candidates = []
+        for candidate in candidates:
+            candidate_label = str(candidate.get("label") or "").strip()
+            candidate_url = str(candidate.get("url") or "").strip()
+            if (preferred_label and candidate_label == preferred_label) or (
+                preferred_url and candidate_url == preferred_url
+            ):
+                preferred_candidates.append(candidate)
+            else:
+                other_candidates.append(candidate)
+        candidates = preferred_candidates + other_candidates
+    direct_candidate_walk = _normalize_service_tier(service_tier) in ("fast", "flex")
     loop_count = max(1, len(candidates))
     for _ in range(loop_count):
-        if manager is not None and hasattr(manager, "claim_request_candidate"):
+        candidate = None
+        if not direct_candidate_walk and manager is not None and hasattr(manager, "claim_request_candidate"):
             try:
                 candidate = manager.claim_request_candidate(
                     excluded_labels=tried_labels,
@@ -160,15 +181,20 @@ def _start_codex_app_server_request(
                 if verbose:
                     print(f"codex app-server pool candidate claim failed: {exc}")
                 candidate = None
-        else:
-            candidate = candidates[0] if candidates else None
+        if not isinstance(candidate, dict):
+            for fallback_candidate in candidates:
+                fallback_label = str(fallback_candidate.get("label") or "").strip()
+                if fallback_label and fallback_label in tried_labels:
+                    continue
+                candidate = fallback_candidate
+                break
         if not isinstance(candidate, dict):
             break
         candidate_url = str(candidate.get("url") or "").strip() or app_server_url
         candidate_label = str(candidate.get("label") or "default").strip() or "default"
         tried_labels.add(candidate_label)
         if is_auth_candidate_blocked(candidate):
-            if manager is not None and hasattr(manager, "release_request_slot"):
+            if not direct_candidate_walk and manager is not None and hasattr(manager, "release_request_slot"):
                 try:
                     manager.release_request_slot(candidate_label)
                 except Exception:

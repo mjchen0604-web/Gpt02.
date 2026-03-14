@@ -119,6 +119,22 @@ def _instructions_for_model(model: str) -> str:
     return base
 
 
+def _resolve_prompt_mode(payload: Dict[str, Any]) -> str:
+    value = payload.get("prompt_mode")
+    if isinstance(value, str) and value.strip().lower() == "native":
+        return "native"
+    return "default"
+
+
+def _resolve_bridge_instructions(model: str, payload: Dict[str, Any]) -> str | None:
+    if _resolve_prompt_mode(payload) != "native":
+        return _instructions_for_model(model)
+    system_prompt = payload.get("system_prompt")
+    if isinstance(system_prompt, str) and system_prompt.strip():
+        return system_prompt.strip()
+    return None
+
+
 def _upstream_attempt_limit(is_stream: bool, model: str | None = None, service_tier: str | None = None) -> int:
     configured_mode = str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower()
     selected_mode = resolve_upstream_mode(configured_mode, model or "", service_tier)
@@ -468,8 +484,6 @@ def _consume_text_completion_nonstream(
 def chat_completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
     verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
-    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
-    expose_thread_ids = bool(current_app.config.get("EXPOSE_THREAD_IDS"))
     reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
     reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
     reasoning_compat = current_app.config.get("REASONING_COMPAT", "think-tags")
@@ -586,6 +600,7 @@ def chat_completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
+    bridge_instructions = _resolve_bridge_instructions(model, payload)
     selected_mode = resolve_upstream_mode(
         str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower(),
         model or "",
@@ -609,7 +624,7 @@ def chat_completions() -> Response:
         upstream, error_resp = start_upstream_request(
             model,
             input_items,
-            instructions=_instructions_for_model(model),
+            instructions=bridge_instructions,
             tools=tools_responses,
             tool_choice=tool_choice,
             parallel_tool_calls=parallel_tool_calls,
@@ -647,7 +662,7 @@ def chat_completions() -> Response:
                 upstream2, err2 = start_upstream_request(
                     model,
                     input_items,
-                    instructions=BASE_INSTRUCTIONS,
+                    instructions=bridge_instructions,
                     tools=base_tools_only,
                     tool_choice=safe_choice,
                     parallel_tool_calls=parallel_tool_calls,
@@ -805,11 +820,6 @@ def chat_completions() -> Response:
             is_stream=is_stream,
             upstream=upstream,
         )
-        if expose_service_tier and service_tier:
-            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-        if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-            resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-            resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -845,11 +855,8 @@ def chat_completions() -> Response:
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        completion["thread_id"] = upstream.chatmock_thread_id
-        completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     if observed_service_tier:
-        completion["performance_mode"] = public_service_tier_name(observed_service_tier)
+        completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/chat/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
@@ -864,13 +871,6 @@ def chat_completions() -> Response:
         upstream=upstream,
         extra={"response_id": response_id},
     )
-    if expose_service_tier and service_tier:
-        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-    if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-        resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp
@@ -880,8 +880,6 @@ def chat_completions() -> Response:
 def completions() -> Response:
     verbose = bool(current_app.config.get("VERBOSE"))
     verbose_obfuscation = bool(current_app.config.get("VERBOSE_OBFUSCATION"))
-    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
-    expose_thread_ids = bool(current_app.config.get("EXPOSE_THREAD_IDS"))
     debug_model = current_app.config.get("DEBUG_MODEL")
     reasoning_effort = current_app.config.get("REASONING_EFFORT", "medium")
     reasoning_summary = current_app.config.get("REASONING_SUMMARY", "auto")
@@ -924,6 +922,7 @@ def completions() -> Response:
         reasoning_overrides,
         allowed_efforts=allowed_efforts_for_model(model),
     )
+    bridge_instructions = _resolve_bridge_instructions(model, payload)
     selected_mode = resolve_upstream_mode(
         str(current_app.config.get("UPSTREAM_MODE") or "auto").strip().lower(),
         model or "",
@@ -946,7 +945,7 @@ def completions() -> Response:
         upstream, error_resp = start_upstream_request(
             model,
             input_items,
-            instructions=_instructions_for_model(model),
+            instructions=bridge_instructions,
             reasoning_param=reasoning_param,
             service_tier=service_tier,
             thread_session=thread_session,
@@ -1113,11 +1112,6 @@ def completions() -> Response:
             is_stream=stream_req,
             upstream=upstream,
         )
-        if expose_service_tier and service_tier:
-            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-        if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-            resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-            resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -1149,11 +1143,8 @@ def completions() -> Response:
         ],
         **({"usage": usage_obj} if usage_obj else {}),
     }
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        completion["thread_id"] = upstream.chatmock_thread_id
-        completion["thread_mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     if observed_service_tier:
-        completion["performance_mode"] = public_service_tier_name(observed_service_tier)
+        completion["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/completions", completion)
     resp = make_response(jsonify(completion), upstream.status_code)
@@ -1168,13 +1159,6 @@ def completions() -> Response:
         upstream=upstream,
         extra={"response_id": response_id},
     )
-    if expose_service_tier and service_tier:
-        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-    if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
-    if expose_thread_ids and isinstance(getattr(upstream, "chatmock_thread_id", None), str):
-        resp.headers["IDIIfy-Thread-Id"] = upstream.chatmock_thread_id
-        resp.headers["IDIIfy-Thread-Mode"] = str(getattr(upstream, "chatmock_thread_mode", "start"))
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp

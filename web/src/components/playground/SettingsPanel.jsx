@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Button, Card, Select, Switch, Typography } from '@douyinfe/semi-ui';
+import { Button, Card, Select, Switch, TextArea, Typography } from '@douyinfe/semi-ui';
 import { Bug, Settings, Sparkles, ToggleLeft, Users, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { renderGroupOption, selectFilter } from '../../helpers';
@@ -133,6 +133,41 @@ const SettingsPanel = ({
             renderOptionItem={renderGroupOption}
             style={{ width: '100%' }}
             dropdownStyle={{ width: '100%', maxWidth: '100%' }}
+            className='!rounded-lg'
+          />
+        </div>
+
+        <div className='space-y-3 rounded-xl border border-[var(--semi-color-border)] p-3'>
+          <Typography.Text strong className='text-sm'>
+            Prompt Mode
+          </Typography.Text>
+          <div className='grid grid-cols-2 gap-2'>
+            <Button
+              theme={inputs.promptMode === 'default' ? 'solid' : 'light'}
+              type={inputs.promptMode === 'default' ? 'primary' : 'tertiary'}
+              onClick={() => onInputChange('promptMode', 'default')}
+              className='!rounded-lg'
+            >
+              Default
+            </Button>
+            <Button
+              theme={inputs.promptMode === 'native' ? 'solid' : 'light'}
+              type={inputs.promptMode === 'native' ? 'primary' : 'tertiary'}
+              onClick={() => onInputChange('promptMode', 'native')}
+              className='!rounded-lg'
+            >
+              Native
+            </Button>
+          </div>
+          <Typography.Text className='text-xs text-gray-500 block'>
+            Default keeps the built-in bridge prompts. Native skips them; enter a custom prompt or leave it blank for no extra prompt.
+          </Typography.Text>
+          <TextArea
+            value={inputs.systemPrompt || ''}
+            onChange={(value) => onInputChange('systemPrompt', value)}
+            disabled={inputs.promptMode !== 'native'}
+            autosize={{ minRows: 4, maxRows: 10 }}
+            placeholder='Optional custom prompt for native mode. Leave blank to send no extra prompt.'
             className='!rounded-lg'
           />
         </div>

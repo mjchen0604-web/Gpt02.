@@ -16,10 +16,10 @@ func TestGetLongContextPricingMultiplier(t *testing.T) {
 			want:        1,
 		},
 		{
-			name:        "gpt54 standard long context doubles",
+			name:        "gpt54 standard long context is four times",
 			model:       "gpt-5.4-medium",
 			promptToken: 300000,
-			want:        2,
+			want:        4,
 		},
 		{
 			name:        "gpt54 turbo long context is four times",

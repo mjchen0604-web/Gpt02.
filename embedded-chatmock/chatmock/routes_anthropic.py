@@ -14,7 +14,6 @@ from .reasoning import (
     build_reasoning_param,
     extract_reasoning_from_model_name,
     extract_service_tier_from_model_name,
-    public_service_tier_name,
 )
 from .upstream_errors import (
     build_anthropic_error_response,
@@ -573,7 +572,6 @@ def messages() -> Response:
 
     model_out = requested_model or model
     is_stream = bool(payload.get("stream"))
-    expose_service_tier = bool(current_app.config.get("EXPOSE_SERVICE_TIER"))
     attempt_limit = _upstream_attempt_limit(is_stream, model, service_tier)
     last_error_info: Dict[str, Any] | None = None
     upstream = None
@@ -627,8 +625,6 @@ def messages() -> Response:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-        if expose_service_tier and service_tier:
-            resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
         for k, v in build_cors_headers().items():
             resp.headers.setdefault(k, v)
         return resp
@@ -730,15 +726,11 @@ def messages() -> Response:
         "usage": {"input_tokens": usage_in, "output_tokens": usage_out},
     }
     if observed_service_tier:
-        message_obj["performance_mode"] = public_service_tier_name(observed_service_tier)
+        message_obj["service_tier"] = observed_service_tier
     if verbose:
         _log_json("OUT POST /v1/messages", message_obj)
 
     resp = make_response(jsonify(message_obj), upstream.status_code)
-    if expose_service_tier and service_tier:
-        resp.headers["IDIIfy-Service-Tier-Requested"] = service_tier
-    if expose_service_tier and observed_service_tier:
-        resp.headers["IDIIfy-Service-Tier-Observed"] = public_service_tier_name(observed_service_tier)
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)
     return resp

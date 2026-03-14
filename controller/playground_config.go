@@ -12,6 +12,8 @@ import (
 var playgroundAllowedInputKeys = map[string]struct{}{
 	"model":             {},
 	"group":             {},
+	"promptMode":        {},
+	"systemPrompt":      {},
 	"temperature":       {},
 	"top_p":             {},
 	"frequency_penalty": {},
@@ -31,6 +33,8 @@ var playgroundAllowedParameterKeys = map[string]struct{}{
 }
 
 var playgroundAllowedPersonalInputKeys = map[string]struct{}{
+	"promptMode":        {},
+	"systemPrompt":      {},
 	"temperature":       {},
 	"top_p":             {},
 	"frequency_penalty": {},
