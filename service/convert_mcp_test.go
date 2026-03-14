@@ -1,10 +1,12 @@
 package service
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service/openaicompat"
 )
 
 func TestClaudeMCPToolNamesAreSanitizedAndRestored(t *testing.T) {
@@ -62,5 +64,31 @@ func TestClaudeMCPToolNamesAreSanitizedAndRestored(t *testing.T) {
 	}
 	if claudeResp.Content[0].Name != "mcp__CherryHub__list" {
 		t.Fatalf("expected restored tool name, got %q", claudeResp.Content[0].Name)
+	}
+}
+
+func TestClaudeMCPServersAreForwardedToResponses(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+	req := dto.ClaudeRequest{
+		Model:      "gpt-5.4-fast-low",
+		McpServers: json.RawMessage(`[{"name":"CherryHub","type":"url","url":"https://example.com/mcp"}]`),
+	}
+
+	openAIReq, err := ClaudeToOpenAIRequest(req, info)
+	if err != nil {
+		t.Fatalf("ClaudeToOpenAIRequest failed: %v", err)
+	}
+	if string(openAIReq.McpServers) == "" {
+		t.Fatalf("expected mcp_servers on OpenAI request")
+	}
+
+	responsesReq, err := openaicompat.ChatCompletionsRequestToResponsesRequest(openAIReq)
+	if err != nil {
+		t.Fatalf("ChatCompletionsRequestToResponsesRequest failed: %v", err)
+	}
+	if string(responsesReq.McpServers) == "" {
+		t.Fatalf("expected mcp_servers on responses request")
 	}
 }
