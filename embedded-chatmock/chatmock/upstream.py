@@ -167,8 +167,8 @@ def _start_codex_app_server_request(
                 other_candidates.append(candidate)
         candidates = preferred_candidates + other_candidates
 
-    # Keep fast/flex on a direct app-server path so single-auth and low-latency
-    # runs do not pay extra candidate claim/inflight overhead.
+    # Preserve pool ordering from get_request_candidates(), but avoid request-level
+    # claim/inflight overhead on fast/flex paths.
     direct_candidate_walk = _normalize_service_tier(service_tier) in ("fast", "flex")
     loop_count = max(1, len(candidates))
     for _ in range(loop_count):
