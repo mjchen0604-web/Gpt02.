@@ -14,6 +14,35 @@ import (
 	"github.com/samber/lo"
 )
 
+func sanitizeReservedClaudeToolName(info *relaycommon.RelayInfo, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return name
+	}
+	if !strings.HasPrefix(name, "mcp__") {
+		return name
+	}
+	safeName := "tool_" + name
+	if info != nil {
+		if info.ToolNameAliases == nil {
+			info.ToolNameAliases = make(map[string]string)
+		}
+		info.ToolNameAliases[safeName] = name
+	}
+	return safeName
+}
+
+func restoreReservedClaudeToolName(info *relaycommon.RelayInfo, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || info == nil || info.ToolNameAliases == nil {
+		return name
+	}
+	if original, ok := info.ToolNameAliases[name]; ok && strings.TrimSpace(original) != "" {
+		return original
+	}
+	return name
+}
+
 func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.RelayInfo) (*dto.GeneralOpenAIRequest, error) {
 	openAIRequest := dto.GeneralOpenAIRequest{
 		Model:       claudeRequest.Model,
@@ -76,10 +105,11 @@ func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.Re
 	tools, _ := common.Any2Type[[]dto.Tool](claudeRequest.Tools)
 	openAITools := make([]dto.ToolCallRequest, 0)
 	for _, claudeTool := range tools {
+		safeName := sanitizeReservedClaudeToolName(info, claudeTool.Name)
 		openAITool := dto.ToolCallRequest{
 			Type: "function",
 			Function: dto.FunctionRequest{
-				Name:        claudeTool.Name,
+				Name:        safeName,
 				Description: claudeTool.Description,
 				Parameters:  claudeTool.InputSchema,
 			},
@@ -87,6 +117,32 @@ func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.Re
 		openAITools = append(openAITools, openAITool)
 	}
 	openAIRequest.Tools = openAITools
+	openAIRequest.McpServers = claudeRequest.McpServers
+
+	if claudeToolChoice, ok := claudeRequest.ToolChoice.(map[string]interface{}); ok {
+		if choiceType, ok := claudeToolChoice["type"].(string); ok {
+			switch choiceType {
+			case "auto":
+				openAIRequest.ToolChoice = "auto"
+			case "any":
+				openAIRequest.ToolChoice = "required"
+			case "none":
+				openAIRequest.ToolChoice = "none"
+			case "tool":
+				if name, ok := claudeToolChoice["name"].(string); ok && strings.TrimSpace(name) != "" {
+					openAIRequest.ToolChoice = map[string]any{
+						"type": "function",
+						"function": map[string]any{
+							"name": sanitizeReservedClaudeToolName(info, name),
+						},
+					}
+				}
+			}
+			if disableParallel, ok := claudeToolChoice["disable_parallel_tool_use"].(bool); ok {
+				openAIRequest.ParallelTooCalls = lo.ToPtr(!disableParallel)
+			}
+		}
+	}
 
 	// Convert messages
 	openAIMessages := make([]dto.Message, 0)
@@ -170,7 +226,7 @@ func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.Re
 						ID:   mediaMsg.Id,
 						Type: "function",
 						Function: dto.FunctionRequest{
-							Name:      mediaMsg.Name,
+							Name:      sanitizeReservedClaudeToolName(info, mediaMsg.Name),
 							Arguments: toJSONString(mediaMsg.Input),
 						},
 					}
@@ -306,7 +362,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 				ContentBlock: &dto.ClaudeMediaMessage{
 					Id:    toolCall.ID,
 					Type:  "tool_use",
-					Name:  toolCall.Function.Name,
+					Name:  restoreReservedClaudeToolName(info, toolCall.Function.Name),
 					Input: map[string]interface{}{},
 				},
 			}
@@ -477,7 +533,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 						ContentBlock: &dto.ClaudeMediaMessage{
 							Id:    toolCall.ID,
 							Type:  "tool_use",
-							Name:  toolCall.Function.Name,
+							Name:  restoreReservedClaudeToolName(info, toolCall.Function.Name),
 							Input: map[string]interface{}{},
 						},
 					})
@@ -594,7 +650,7 @@ func ResponseOpenAI2Claude(openAIResponse *dto.OpenAITextResponse, info *relayco
 				claudeContent := dto.ClaudeMediaMessage{}
 				claudeContent.Type = "tool_use"
 				claudeContent.Id = toolUse.ID
-				claudeContent.Name = toolUse.Function.Name
+				claudeContent.Name = restoreReservedClaudeToolName(info, toolUse.Function.Name)
 				var mapParams map[string]interface{}
 				if err := common.Unmarshal([]byte(toolUse.Function.Arguments), &mapParams); err == nil {
 					claudeContent.Input = mapParams

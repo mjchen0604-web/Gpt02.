@@ -86,6 +86,7 @@ type GeneralOpenAIRequest struct {
 	SearchParameters json.RawMessage `json:"search_parameters,omitempty"`
 	// claude
 	WebSearchOptions *WebSearchOptions `json:"web_search_options,omitempty"`
+	McpServers       json.RawMessage   `json:"mcp_servers,omitempty"`
 	// OpenRouter Params
 	Usage     json.RawMessage `json:"usage,omitempty"`
 	Reasoning json.RawMessage `json:"reasoning,omitempty"`
@@ -845,6 +846,7 @@ type OpenAIResponsesRequest struct {
 	Text             json.RawMessage `json:"text,omitempty"`
 	ToolChoice       json.RawMessage `json:"tool_choice,omitempty"`
 	Tools            json.RawMessage `json:"tools,omitempty"` // 需要处理的参数很少，MCP 参数太多不确定，所以用 map
+	McpServers       json.RawMessage `json:"mcp_servers,omitempty"`
 	TopP             *float64        `json:"top_p,omitempty"`
 	Truncation       json.RawMessage `json:"truncation,omitempty"`
 	User             json.RawMessage `json:"user,omitempty"`

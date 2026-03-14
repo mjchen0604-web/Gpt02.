@@ -149,6 +149,7 @@ type RelayInfo struct {
 	LastError                             *types.NewAPIError
 	RuntimeHeadersOverride                map[string]interface{}
 	UseRuntimeHeadersOverride             bool
+	ToolNameAliases                       map[string]string
 
 	PriceData types.PriceData
 
