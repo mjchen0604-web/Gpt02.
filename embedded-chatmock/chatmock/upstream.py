@@ -166,7 +166,6 @@ def _start_codex_app_server_request(
             else:
                 other_candidates.append(candidate)
         candidates = preferred_candidates + other_candidates
-
     # Preserve pool ordering from get_request_candidates(), but avoid request-level
     # claim/inflight overhead on fast/flex paths.
     direct_candidate_walk = _normalize_service_tier(service_tier) in ("fast", "flex")
