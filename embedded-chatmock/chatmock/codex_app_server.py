@@ -592,6 +592,7 @@ class CodexAppServerUpstream:
             )
 
             saw_output_delta = False
+            output_delta_source: str | None = None
             usage_obj: Dict[str, int] | None = None
             saw_tool_call = False
 
@@ -705,6 +706,7 @@ class CodexAppServerUpstream:
                     payload = params.get("msg") if isinstance(params.get("msg"), dict) else params
                     delta = payload.get("delta") if isinstance(payload, dict) else None
                     if isinstance(delta, str) and delta:
+                        output_delta_source = output_delta_source or "codex_event"
                         saw_output_delta = True
                         yield _encode(
                             {
@@ -720,7 +722,12 @@ class CodexAppServerUpstream:
 
                 if method == "item/agentMessage/delta":
                     delta = params.get("delta")
-                    if isinstance(delta, str) and delta and not saw_output_delta:
+                    if (
+                        isinstance(delta, str)
+                        and delta
+                        and output_delta_source in (None, "agent_item")
+                    ):
+                        output_delta_source = "agent_item"
                         saw_output_delta = True
                         yield _encode(
                             {
@@ -768,7 +775,11 @@ class CodexAppServerUpstream:
 
                 if method == "item/completed":
                     item = params.get("item") if isinstance(params.get("item"), dict) else {}
-                    if item.get("type") == "agentMessage" and not saw_output_delta:
+                    if (
+                        item.get("type") == "agentMessage"
+                        and not saw_output_delta
+                        and output_delta_source is None
+                    ):
                         text = item.get("text")
                         if isinstance(text, str) and text:
                             saw_output_delta = True
